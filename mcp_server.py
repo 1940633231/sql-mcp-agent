@@ -5,6 +5,10 @@
     - get_schema     查看某张表的结构（列名/类型/注释）
     - run_query      执行只读 SQL（仅允许单条 SELECT），返回行数据
 
+另暴露 2 个只读资源（URI 寻址的静态数据，供应用预取/客户端挂载，区别于模型调用的工具）：
+    - database://schema              全库所有表的字段结构
+    - database://table/{table_name}  指定表的字段结构（URI 模板资源）
+
 生产级考量：
     1. 只读     —— 拦截所有非 SELECT 语句，防止 Agent 改写数据
     2. 单语句   —— 拒绝多语句拼接，杜绝 SQL 注入式串行执行
@@ -12,7 +16,8 @@
     4. 行数限制 —— 默认返回行数上限，防止拖库
     5. 超时     —— 单次查询限时，防止慢 SQL 耗尽连接
 
-运行：python mcp_server.py            # stdio 传输
+运行：python mcp_server.py            # HTTP（Streamable HTTP，默认，常驻服务）
+      MCP_TRANSPORT=stdio python mcp_server.py   # stdio（子进程模式）
 """
 import logging
 import re
@@ -118,6 +123,41 @@ def run_query(sql: str) -> dict:
         db.close()
 
 
+# ---------- Resources：URI 寻址的只读数据 ----------
+# Resource 由「应用/用户」控制加载，Tool 由「模型」决定调用；表结构是静态参考数据，
+# 适合 GET 语义（可预取、可缓存、可订阅变更），故以 Resource 暴露。@server.tool
+# 装饰器会原样返回函数，因此这里直接复用上面已注册的工具函数。
+
+@server.resource(
+    "database://schema",
+    name="全库表结构",
+    mime_type="application/json",
+    description="一次读取业务库所有表的字段结构（表名 + 列名/类型/可空/主键/注释）",
+)
+def full_schema() -> list[dict]:
+    return [{"table": tbl, "columns": get_schema(tbl)} for tbl in list_tables()]
+
+
+@server.resource(
+    "database://table/{table_name}",
+    name="单表结构",
+    mime_type="application/json",
+    description="按 URI 读取指定表的字段结构，如 database://table/company",
+)
+def table_schema(table_name: str) -> list[dict]:
+    return get_schema(table_name)
+
+
 if __name__ == "__main__":
-    logger.info("MySQL SQL MCP Server 启动（stdio）")
-    server.run(transport="stdio")
+    if config.MCP_TRANSPORT == "stdio":
+        logger.info("MySQL SQL MCP Server 启动（stdio）")
+        server.run(transport="stdio")
+    else:
+        logger.info("MySQL SQL MCP Server 启动（streamable-http）http://%s:%d%s",
+                    config.MCP_HOST, config.MCP_PORT, config.MCP_PATH)
+        server.run(
+            transport="streamable-http",
+            host=config.MCP_HOST,
+            port=config.MCP_PORT,
+            streamable_http_path=config.MCP_PATH,
+        )

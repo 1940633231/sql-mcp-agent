@@ -21,10 +21,12 @@
               │ ① 发现工具 (list_tools) + schema
               │ ② 调用工具 (call_tool)
 ┌─────────────▼───────────┐
-│  MySQL MCP Server       │  mcp_server.py（mcp 2.x MCPServer，stdio）
-│  list_tables            │   工具动态注册，可换传输(sse/http)
-│  get_schema             │
+│  MySQL MCP Server       │  mcp_server.py（mcp 2.x MCPServer）
+│  list_tables            │   默认 Streamable HTTP（常驻服务）
+│  get_schema             │   可切 stdio（MCP_TRANSPORT=stdio）
 │  run_query (只读SELECT) │
+│  database://schema      │   Resource：全库结构，URI 寻址，供应用预取
+│  database://table/{名}  │   Resource 模板：单表结构
 └─────────────┬───────────┘
               │ ③ 连接
 ┌─────────────▼───────────┐
@@ -55,10 +57,17 @@ cp .env.example .env          # 然后编辑 .env 填入数据库密码 与 LLM 
 python db_init.py --reset     # 创建 sales_demo 库、建表、随机造 40 家公司 + 数千条销售流水
 ```
 
-### 4. 跑 Agent
+### 4. 启动 MCP Server（HTTP 常驻）
 
 ```bash
-# 方式一：直接问答
+python mcp_server.py
+# 监听 http://127.0.0.1:8000/mcp（可用 MCP_HOST / MCP_PORT / MCP_PATH 覆盖）
+```
+
+### 5. 跑 Agent
+
+```bash
+# 方式一：直接问答（另开一个终端）
 python sql_agent.py "今年销售额最高的10家公司"
 
 # 方式二：打印工具调用过程（看 Agent 一步步调了哪些工具、SQL、结果）
@@ -87,7 +96,7 @@ python sql_agent.py "各行业今年的销售总额排名" --trace
 - **只读三层纵深**：Agent 约定只读 → MCP Server 白名单 / 单语句 / 危险关键字黑名单 / 行数上限 / 执行超时 → 数据库账号建议只授 SELECT 权限
 - **凭证隔离**：连接串、Key 全部走 `.env`，代码零硬编码；`.env` 已被 `.gitignore` 拦截
 - **版本注意**：本项目用 mcp **2.x** 的 `MCPServer`（v1 的 `FastMCP` 已改名，勿用旧教程 API）
-- **传输可替换**：`MCPServer.run(transport=...)` 支持 stdio / SSE / Streamable HTTP，可平滑发布成独立服务
+- **传输**：默认 Streamable HTTP，Server 常驻独立进程，可多客户端共享、便于部署与鉴权；设 `MCP_TRANSPORT=stdio` 可回到子进程模式
 
 ## 已知边界
 

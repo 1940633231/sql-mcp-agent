@@ -9,9 +9,11 @@
 import asyncio
 import sys
 
-from mcp import ClientSession, StdioServerParameters, stdio_client
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 sys.path.insert(0, ".")
+import config  # noqa: E402
 from sql_agent import SQLAgent  # noqa: E402
 
 # --- Agent 对话测试用例： (编号, 问题, 说明) ---
@@ -66,8 +68,7 @@ async def server_security_case():
     print("\n" + "=" * 70)
     print("【⑧b】Server 工具级恶意 SQL 拦截（直接调用 run_query）")
     print("-" * 70)
-    params = StdioServerParameters(command=sys.executable, args=["mcp_server.py"])
-    async with stdio_client(params) as (read, write):
+    async with streamable_http_client(config.mcp_url()) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             for label, sql in MALICIOUS_SQL:

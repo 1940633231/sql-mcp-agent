@@ -1,25 +1,22 @@
 """SQL Agent：通过 MCP 发现并调用 MySQL 只读工具，解答自然语言数据库问题。
 
 工作流程（ReAct + Function Calling）：
-    1. 用 MCP stdio 客户端连接 mcp_server.py，动态发现工具（list_tools）
+    1. 用 MCP Streamable HTTP 客户端连接 mcp_server.py（需先单独启动），动态发现工具（list_tools）
     2. 把 MCP 工具 schema 转换为 OpenAI 兼容的 function-calling schema
     3. 进入循环：LLM 决定调用哪些工具 → agent 经 MCP 执行 → 结果喂回 LLM
     4. 直到 LLM 给出最终答案
 
-示例：python sql_agent.py "今年销售额最高的10家公司"
+示例：python mcp_server.py &  python sql_agent.py "今年销售额最高的10家公司"
 """
 import asyncio
 import json
 import sys
 
-from mcp import ClientSession, StdioServerParameters, stdio_client
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 from openai import OpenAI
 
 import config
-
-# 供 stdio_client 复用当前解释器启动子进程运行 MCP server
-SERVER_CMD = sys.executable
-SERVER_ARGS = ["mcp_server.py"]
 
 
 class SQLAgent:
@@ -81,30 +78,28 @@ class SQLAgent:
         )
 
     async def _gather_context(self, session: ClientSession) -> tuple[str, str, list[dict]]:
-        """发现工具并预取库结构与各表结构，帮助 LLM 写正确 SQL。"""
+        """发现工具；库结构走 Resource（database://schema）一次性预取，不再逐表调 Tool。
+
+        表结构是静态参考数据、由应用而非模型决定加载，用 read_resource 语义更准确，
+        且省去 list_tables + N 次 get_schema 的工具调用轮次。
+        """
         tools = await session.list_tools()
         openai_schemas = [self._to_openai_schema(t) for t in tools.tools]
 
-        tables_desc = self._extract_result(await session.call_tool("list_tables", {}))
-        tables = _to_names(tables_desc)
-
-        schema_parts = []
-        for tbl_name in tables:
-            try:
-                s = self._extract_result(
-                    await session.call_tool("get_schema", {"table_name": tbl_name})
-                )
-                schema_parts.append(f"表 {tbl_name}: {s}")
-            except Exception:
-                continue
-        schema_desc = "\n".join(schema_parts)
+        res = await session.read_resource("database://schema")
+        schema_data = json.loads(res.contents[0].text)
+        tables_desc = json.dumps([t["table"] for t in schema_data], ensure_ascii=False)
+        schema_desc = "\n".join(
+            f"表 {t['table']}: {json.dumps(t['columns'], ensure_ascii=False)}"
+            for t in schema_data
+        )
 
         return tables_desc, schema_desc, openai_schemas
 
     async def run(self, question: str) -> str:
-        """主入口：连接 MCP，循环调用 LLM 直到得到最终答案。"""
-        params = StdioServerParameters(command=SERVER_CMD, args=SERVER_ARGS)
-        async with stdio_client(params) as (read, write):
+        """主入口：连接 MCP（HTTP），循环调用 LLM 直到得到最终答案。"""
+        url = config.mcp_url()
+        async with streamable_http_client(url) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tables_desc, schema_desc, openai_schemas = await self._gather_context(session)
@@ -158,15 +153,6 @@ class SQLAgent:
                         })
                     pending -= 1
                 return "达到最大工具调用次数，未能得出最终答案。"
-
-
-def _to_names(tables_str: str) -> list[str]:
-    """把 list_tables 的 JSON 字符串解析为表名列表。"""
-    try:
-        v = json.loads(tables_str)
-        return v if isinstance(v, list) else []
-    except Exception:
-        return []
 
 
 async def main():

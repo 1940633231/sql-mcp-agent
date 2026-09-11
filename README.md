@@ -1,5 +1,9 @@
 # SQL Agent + MySQL MCP Server
 
+![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
+
+> **当前版本：v0.2.0**（SQL Security 重构：三层职责分离 + AST 校验 + Allowlist 优先）
+
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
 ## 它能做什么

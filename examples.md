@@ -3,7 +3,7 @@
 运行方式：
 
 ```bash
-.venv\Scripts\python.exe sql_agent.py "你的问题"
+.venv\Scripts\python.exe -m agent.agent "你的问题"
 ```
 
 > 说明：以下「已验证」的解答均由 Agent 独立完成（动态发现 MCP 工具 → 生成/执行只读 SQL → 汇总答案），金额等数字已与 `sale_records` 表直接聚合结果交叉核对一致。
@@ -13,7 +13,7 @@
 ## 1. 查询今年销售额最高的 10 家公司
 
 ```
-python sql_agent.py "今年销售额最高的10家公司"
+python -m agent.agent "今年销售额最高的10家公司"
 ```
 
 Agent 生成的查询逻辑：
@@ -48,7 +48,7 @@ LIMIT 10;
 ## 2. 按行业汇总今年销售总额并排名
 
 ```
-python sql_agent.py "按行业汇总今年的销售总额，从高到低给出排名"
+python -m agent.agent "按行业汇总今年的销售总额，从高到低给出排名"
 ```
 
 Agent 生成的查询逻辑：
@@ -95,7 +95,7 @@ ORDER BY total DESC;
 
 ## 8 类问题测试报告
 
-批处理入口：`batch_test.py`（Agent 对话用例 + Server 工具级安全用例，带 `--trace` 观察中间过程）。
+批处理入口：`scripts/batch_test.py`（Agent 对话用例 + Server 工具级安全用例，带 `--trace` 观察中间过程）。
 
 | # | 类型 | 测试问题 | 结果 |
 | --- | --- | --- | --- |
@@ -121,13 +121,13 @@ ORDER BY total DESC;
 | `SELECT @@version`（版本/路径指纹） | 拦截：`包含被禁止的关键字` |
 | `SELECT * FROM sale_records`（拖库） | 执行但 `truncated=true`，仅返回 200 行上限，防止全量拖出 |
 
-> 关键字拦截范围（`mcp_server.py` 的 `FORBIDDEN`）：写操作（`insert/update/delete/...`）、多语句特征、`union select`、`information_schema`、文件读取（`load_file/outfile/dumpfile`）、UDF 与系统调用（`sys_*`、`xp_cmd*`）、服务控制（`shutdown`）、版本/路径指纹（`@@version` 等）。
-> 实现注记：`@@version` 这类以符号开头的 token 不能套 `\b` 单词边界（`@` 非词字符会绕过匹配），故正则拆成「词 token 带边界」与「符号 token 不带边界」两组并列。
+> 关键字拦截范围（`configs/security.yaml` 的 `forbidden_keywords` / `forbidden_patterns`）：写操作（`insert/update/delete/...`）、多语句特征、`union select`、文件读取（`load_file/outfile/dumpfile`）、UDF 与系统调用（`sys_*`、`xp_cmd*`）、服务控制（`shutdown`）、版本/路径指纹（`@@version` 等）；系统库（`information_schema` / `mysql` / `performance_schema` / `sys`）另由 `blocked_schemas` 封禁。
+> 实现注记：`@@version` 这类以符号开头的 token 不能套 `\b` 单词边界（`@` 非词字符会绕过匹配），故规则拆成「词 token 带边界」（`forbidden_keywords`）与「正则不带边界」（`forbidden_patterns`）两组并列。
 
 ### 测试中发现并修复的 Bug
 
 批量测试第一轮暴露：当 SQL 自带结尾分号（`SELECT COUNT(*) FROM company;`）时，server 追加行数上限会拼成 `… FROM company; LIMIT 200` 导致语法错误，Agent 反复重试仍报错。
-修复：追加 `LIMIT` 前先剥离结尾分号（`mcp_server.py` 的 `run_query`）。修复后 ①-⑤ 全部一次跑通。
+修复：追加 `LIMIT` 前先剥离结尾分号（现由 `mcp_server/security/validator.py` 放行时剥离，`mcp_server/tools/query.py` 再追加行数上限）。修复后 ①-⑤ 全部一次跑通。
 
 ### 补充结论
 
@@ -138,7 +138,7 @@ ORDER BY total DESC;
 
 ## 生产化备忘
 
-- 所有工具均为只读（仅放行 `SELECT`），并做单语句校验、危险关键字拦截、行数上限、执行超时保护。
+- 所有工具均为只读（仅放行 `SELECT`），并做单语句校验、危险关键字拦截、系统库封禁、行数上限、执行超时保护；策略集中在 `configs/security.yaml`。
 - 连接参数（`MYSQL_*`）与 LLM 参数（`LLM_*`）统一从 `.env` 读取，代码无硬编码。
-- Server 使用 mcp **2.x** 的 `MCPServer`，Agent 通过 stdio 客户端动态发现工具（`list_tools`）并调用。
-- 想在别的 MCP 客户端里复用这套能力，可直接把 `mcp_server.py` 以 stdio/HTTP 传输接入即可。
+- Server 使用 mcp **2.x** 的 `MCPServer`，Agent 通过 Streamable HTTP 客户端动态发现工具（`list_tools`）并调用。
+- 想在别的 MCP 客户端里复用这套能力，可直接把 `mcp_server` 包以 stdio/HTTP 传输（`python -m mcp_server.server`）接入即可。

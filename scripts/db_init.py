@@ -1,8 +1,8 @@
 """初始化业务库 sales_demo：建库、建表、造测试数据。
 
-用法：
-    python db_init.py            # 建库（若已存在则提示，不重建）
-    python db_init.py --reset    # 强制重建（删库建库）
+用法（在项目根目录运行）：
+    python scripts/db_init.py            # 建库（若已存在则提示，不重建）
+    python scripts/db_init.py --reset    # 强制重建（删库建库）
 
 数据模型：公司 sales 场景
     - company       公司主表
@@ -12,10 +12,14 @@ import argparse
 import random
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 import pymysql
 
-import config
+# 以脚本方式运行时，把项目根目录加入 sys.path，保证能 import mcp_server 包
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from mcp_server import config  # noqa: E402
 
 
 def connect(database=""):

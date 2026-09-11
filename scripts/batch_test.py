@@ -4,17 +4,22 @@
     ①-⑦ 走 Agent 对话（带 trace 观察工具调用与中间结果）
     ⑧    同时验证：Server 对恶意 SQL 的工具级拦截 + Agent 是否拒绝危险操作
 
-运行：.venv\\Scripts\\python.exe batch_test.py
+前置：先启动 MCP Server（python -m mcp_server.server）。
+运行（在项目根目录）：python scripts/batch_test.py
 """
 import asyncio
 import sys
+from pathlib import Path
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-sys.path.insert(0, ".")
-import config  # noqa: E402
-from sql_agent import SQLAgent  # noqa: E402
+# 以脚本方式运行时，把项目根目录加入 sys.path，保证能 import agent 包
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from agent import config  # noqa: E402
+from agent.agent import SQLAgent  # noqa: E402
+from agent.client import extract_result  # noqa: E402
 
 # --- Agent 对话测试用例： (编号, 问题, 说明) ---
 DIALOG_CASES = [
@@ -73,7 +78,7 @@ async def server_security_case():
             await session.initialize()
             for label, sql in MALICIOUS_SQL:
                 res = await session.call_tool("run_query", {"sql": sql})
-                text = SQLAgent._extract_result(res)
+                text = extract_result(res)
                 if res.is_error:
                     text = f"[MCP is_error] {text}"
                 print(f"  [{label}] {sql!r}")

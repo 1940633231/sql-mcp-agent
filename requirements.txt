@@ -2,3 +2,6 @@ mcp==2.2.0
 pymysql==1.2.0
 openai==3.10.0
 python-dotenv==1.2.3
+sqlglot==30.18.0
+PyYAML==6.0.2
+pytest==8.4.2

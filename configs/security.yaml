@@ -1,0 +1,97 @@
+# SQL 只读安全策略
+# 由 mcp_server/security/policy.py 的 load_policy() 加载，可在不改代码的前提下收紧/放宽规则。
+
+# 允许的语句类型（由 sqlglot AST 判定；WITH ... SELECT / UNION 都会归入 SELECT 家族）
+allowed_statements:
+  - SELECT
+
+# 单次调用允许的最大语句数；>1 即视为多语句拼接，直接拒绝
+max_statements: 1
+
+# 关键字黑名单：大小写不敏感、按单词边界精确匹配，命中即拒绝
+forbidden_keywords:
+  # 写操作 / DDL
+  - INSERT
+  - UPDATE
+  - DELETE
+  - DROP
+  - ALTER
+  - CREATE
+  - TRUNCATE
+  - REPLACE
+  - RENAME
+  - GRANT
+  - REVOKE
+  - CALL
+  # 文件读写 / 导入导出
+  - IMPORT
+  - OUTFILE
+  - DUMPFILE
+  - LOAD_FILE
+  # 延时 / 服务控制
+  - SLEEP
+  - BENCHMARK
+  - SHUTDOWN
+  # UDF / 系统调用 / 扩展存储过程
+  - SYS_EXEC
+  - SYS_EVAL
+  - SYS_BIN_EVAL
+  - SYS_GET
+  - XP_CMDSHELL
+  - XP_CMDEXEC
+  - XP_DIRTREE
+
+# 正则黑名单：用于不能套单词边界的符号类 token（大小写不敏感）
+forbidden_patterns:
+  - 'union\s+select'      # 联合查询注入
+  - '@@\w+'               # 版本 / 路径指纹，如 @@version / @@datadir
+  - 'master\s*\.\.'       # SQL Server 扩展存储过程
+
+# 禁止访问的系统库：命中「库名.表名」限定符或裸表名即拒绝
+blocked_schemas:
+  - information_schema
+  - performance_schema
+  - mysql
+  - sys
+
+# 表级访问控制（Allowlist 优先于 Denylist）
+# 比较对象是 AST 抽取的真实表引用，不是 SQL 字符串里是否出现该字
+tables:
+  allowed:
+    - company
+    - sale_records
+  denied:
+    - user
+    - employee
+    - password
+    - system_config
+    - audit_log
+
+# 列级访问控制（ACL）：按表配置 allowed/denied 列
+# 规则：列命中该表 denied -> 拒绝；该表配了 allowed 且列不在其中 -> 拒绝（Allowlist 兜底）。
+# 注意：SELECT * 不产生列引用，ACL 无法覆盖（已知边界）。
+columns:
+  company:
+    allowed:
+      - company_id
+      - name
+      - industry
+      - headquarters
+      - founded_year
+    denied:
+      - employees          # 员工数视为敏感字段，禁止直接查询
+
+# 语句 JOIN 数量上限（防止多表 JOIN 爆炸）；0 或缺省表示不限
+max_joins: 3
+
+# 执行限制
+limits:
+  max_rows: 200                 # 单次返回的最大行数
+  max_result_bytes: 5242880     # 单次最大返回字节数（5MB，防 TEXT 大字段撑爆），0 表示不限
+  max_sql_length: 10000         # 单条 SQL 最大长度；超长直接拒绝，不解析不进栈
+  max_concurrent_queries: 10    # 最大并发查询数；超限立即拒绝而非排队
+  timeout_seconds: 15           # 单次查询超时（秒）
+  enforce_limit: true           # 对未显式 LIMIT 的查询自动追加行数上限
+
+# 合法标识符（表名/库名段）模式：用于 get_schema 等表名参数与 sqlglot 抽取出的表名
+identifier_pattern: '^[A-Za-z0-9_]+$'

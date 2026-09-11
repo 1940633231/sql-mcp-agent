@@ -20,6 +20,9 @@ MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 MCP_PATH = os.getenv("MCP_PATH", "/mcp")
 
+# v0.3：服务端 AUTH_MODE=static 时，Agent 用该 Bearer Token 代表某个 principal。
+MCP_AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
+
 
 def mcp_url() -> str:
     """MCP Server 的 HTTP 端点地址（streamable-http 客户端用）。"""

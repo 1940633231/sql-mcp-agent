@@ -8,7 +8,7 @@ import json
 from contextlib import asynccontextmanager
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from . import config
 
@@ -16,10 +16,17 @@ from . import config
 @asynccontextmanager
 async def mcp_session(url: str | None = None):
     """连接 MCP Server（默认 Streamable HTTP）并完成初始化握手。"""
-    async with streamable_http_client(url or config.mcp_url()) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    headers = {}
+    if config.MCP_AUTH_TOKEN:
+        headers["Authorization"] = "Bearer %s" % config.MCP_AUTH_TOKEN
+    http_client = create_mcp_http_client(headers=headers or None)
+    async with http_client:
+        async with streamable_http_client(
+            url or config.mcp_url(), http_client=http_client
+        ) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
 
 
 def to_openai_tool(tool) -> dict:

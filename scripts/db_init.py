@@ -64,7 +64,13 @@ CREATE INDEX idx_sr_company_date ON sale_records (company_id, record_date);
 def create_tables(db):
     with db.cursor() as cur:
         for stmt in filter(None, [s.strip() for s in SCHEMA.split(";")]):
-            cur.execute(stmt)
+            try:
+                cur.execute(stmt)
+            except pymysql.err.OperationalError as exc:
+                # MySQL 不支持 CREATE INDEX IF NOT EXISTS；重复建库时保留既有索引。
+                if exc.args and exc.args[0] == 1061:
+                    continue
+                raise
     print("[db_init] 建表完成（company / sale_records）")
 
 
@@ -113,12 +119,63 @@ def load_mock_data(db, num_companies=40, start_year=2023, end_year=2026):
     print(f"[db_init] 造数完成：{num_companies} 家公司，{len(rows)} 条销售流水")
 
 
+PERMISSION_COMPANIES = [
+    (9001, "权限测试电子甲", "电子", "北京", 2010, 1200),
+    (9002, "权限测试电子乙", "电子", "上海", 2014, 2400),
+    (9003, "权限测试医药甲", "医药", "北京", 2012, 3600),
+    (9004, "权限测试医药乙", "医药", "上海", 2016, 4800),
+    (9005, "权限测试汽车甲", "汽车", "深圳", 2011, 6000),
+    (9006, "权限测试汽车乙", "汽车", "广州", 2018, 7200),
+]
+
+
+def load_permission_fixtures(db) -> None:
+    """写入可重复的 V0.3 多主体权限测试数据。"""
+    with db.cursor() as cur:
+        for company_id, name, industry, city, founded, employees in PERMISSION_COMPANIES:
+            cur.execute(
+                "INSERT INTO company (company_id, name, industry, headquarters, founded_year, employees) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE name=VALUES(name), industry=VALUES(industry), "
+                "headquarters=VALUES(headquarters), founded_year=VALUES(founded_year), "
+                "employees=VALUES(employees)",
+                (company_id, name, industry, city, founded, employees),
+            )
+
+        company_ids = [row[0] for row in PERMISSION_COMPANIES]
+        placeholders = ",".join("%s" for _ in company_ids)
+        cur.execute(
+            "DELETE FROM sale_records WHERE company_id IN (%s)" % placeholders,
+            company_ids,
+        )
+        rows = []
+        for offset, company_id in enumerate(company_ids, start=1):
+            rows.extend([
+                (company_id, offset * 1000 + 100, "2026-01-15"),
+                (company_id, offset * 1000 + 200, "2026-02-20"),
+                (company_id, offset * 1000 + 300, "2026-03-25"),
+            ])
+        cur.executemany(
+            "INSERT INTO sale_records (company_id, amount, record_date) VALUES (%s, %s, %s)",
+            rows,
+        )
+    print(
+        "[db_init] V0.3 权限测试数据完成：%d 家固定公司，%d 条固定流水"
+        % (len(PERMISSION_COMPANIES), len(rows))
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="初始化 sales_demo 测试库")
     parser.add_argument("--reset", action="store_true", help="强制重建数据库")
+    parser.add_argument(
+        "--permission-fixtures",
+        action="store_true",
+        help="写入可重复的 V0.3 权限测试数据",
+    )
     args = parser.parse_args()
 
-    if not args.reset:
+    if not args.reset and not args.permission_fixtures:
         ans = input("将创建数据库 sales_demo，若已存在会保留。继续? [y/N] ")
         if ans.strip().lower() != "y":
             print("已取消")
@@ -130,13 +187,15 @@ def main():
         db = connect(config.TARGET_DATABASE)
         try:
             create_tables(db)
-            # 未重置时若已有数据则跳过造数，避免重复
             with db.cursor() as cur:
                 cur.execute("SELECT COUNT(*) AS n FROM company")
-                if cur.fetchone()["n"] > 0 and not args.reset:
-                    print("[db_init] 已存在数据，跳过造数。使用 --reset 可重建。")
-                    return
-            load_mock_data(db)
+                has_data = cur.fetchone()["n"] > 0 and not args.reset
+            if has_data:
+                print("[db_init] 已存在数据，跳过随机造数。使用 --reset 可重建。")
+            else:
+                load_mock_data(db)
+            if args.permission_fixtures:
+                load_permission_fixtures(db)
         finally:
             db.close()
     finally:

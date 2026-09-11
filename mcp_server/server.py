@@ -1,9 +1,10 @@
 """MySQL SQL MCP Server 入口：组装工具与资源，启动传输层。
 
-对外暴露 3 个只读工具：
+对外暴露 3 个数据查询工具与 5 个策略管理工具：
     - list_tables    列出业务库所有表
     - get_schema     查看某张表的结构
     - run_query      执行只读 SQL（仅允许单条 SELECT）
+策略管理工具只允许具备 policy:admin 的角色调用。
 
 另暴露 2 个只读资源（URI 寻址的静态数据，供应用预取/客户端挂载）：
     - database://schema              全库所有表的字段结构
@@ -21,15 +22,23 @@ import logging
 from mcp.server.mcpserver import MCPServer
 
 from . import config
+from .auth.token_verifier import build_auth_settings
+from .tools import policy_admin as policy_admin_tools
 from .tools import query as query_tools
 from .tools import schema as schema_tools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("sql_mcp")
 
-server = MCPServer(name="mysql-sql-agent")
+_auth_settings, _token_verifier = build_auth_settings()
+server = MCPServer(
+    name="mysql-sql-agent",
+    auth=_auth_settings,
+    token_verifier=_token_verifier,
+)
 
 schema_tools.register(server)
+policy_admin_tools.register(server)
 query_tools.register(server)
 
 

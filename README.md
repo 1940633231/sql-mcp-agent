@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.2.0**（SQL Security 重构：三层职责分离 + AST 校验 + Allowlist 优先）
+> **当前版本：v0.3.0**（权限系统：Authentication + RBAC + ACL + Table/Column Permission + RLS）
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -14,6 +14,8 @@
 - SQL 错误自动修正
 - 识别不存在的字段 / 表，不编造
 - 拦截恶意 / 危险 SQL（基于 sqlglot AST 的校验管线：只读语句白名单 + 单语句 + 表/列 Allowlist + JOIN 上限 + 系统库封禁 + 行数/字节/长度/并发成本限制；关键字黑名单仅作辅助防线）
+- 请求级权限：认证 Principal → RBAC → 表/列 ACL → Row-Level Security → SQL 重写 → 审计
+- 受限用户查询 `SELECT *` 时自动展开可见列；schema 工具与 Resource 也只返回当前主体可见的表和列
 
 ## 架构
 
@@ -50,6 +52,28 @@
 - **② 校验管线基于 AST**：SQL → Parser → AST（表 / 列 / JOIN / 子查询 / LIMIT）→ Statement Type → Policy → ValidationResult，结构提取后再比对，避免字符串匹配的误判与绕过。
 - **③ Allowlist 优先于 Denylist**：不是「发现危险才拒绝」，而是「符合安全 Policy 才允许执行」。
 
+### 权限架构（V0.3）
+
+```text
+MCP Request
+  -> Authentication（Bearer Token / 本地服务身份）
+  -> 外部 OAuth 2.1 / JWT JWKS 或静态 Token
+  -> Principal（subject / roles / attributes）
+  -> RBAC（query:run / schema:read）
+  -> Table ACL + Column ACL
+  -> Row-Level Security（AST 条件注入）
+  -> CTE / 派生表列血缘与结果列二次防护
+  -> SQL 二次安全校验
+  -> QueryExecutor
+```
+
+- 策略集中在 `configs/permissions.yaml`，角色、主体、ACL、RLS 均不写死在 SQL 中。
+- `POLICY_STORE=mysql` 时策略存 MySQL 版本表，默认每 5 秒检查 active 版本；支持 CLI/MCP 管理工具。
+- JWT 模式校验签名、issuer、audience、exp，可通过 JWKS 或静态公钥加载密钥。
+- 决策采用 `deny > allow > 默认拒绝`；受 RLS 保护的表没有适用策略时直接拒绝。
+- 表结构工具同样经过授权：不可见表不返回，列级 ACL 隐藏的字段不会出现在 schema 结果中。
+- `AUTH_MODE=disabled` 保持本地开发体验；`AUTH_MODE=static` 可用 Bearer Token 验证完整认证链。
+
 MCP 对外能力：
 
 | 类型 | 名称 | 说明 |
@@ -57,6 +81,11 @@ MCP 对外能力：
 | Tool | `list_tables` | 列出业务库所有表 |
 | Tool | `get_schema(table_name)` | 查看某张表的结构（列名/类型/可空/主键） |
 | Tool | `run_query(sql)` | 执行只读 SQL（仅单条 SELECT），返回行数据 |
+| Tool | `get_policy_status()` | 查看 active 权限策略版本与来源 |
+| Tool | `reload_permission_policy()` | 强制热重载策略 |
+| Tool | `publish_permission_policy(document)` | 发布新策略版本（需 `policy:admin`） |
+| Tool | `list_permission_policy_versions(limit)` | 查看策略版本历史 |
+| Tool | `export_permission_policy()` | 导出当前策略 |
 | Resource | `database://schema` | 全库所有表结构（应用预取，省钱省轮次） |
 | Resource | `database://table/{table_name}` | 单表结构（URI 模板资源） |
 
@@ -81,6 +110,7 @@ cp .env.example .env          # 然后编辑 .env 填入数据库密码 与 LLM 
 
 ```bash
 python scripts/db_init.py --reset   # 创建 sales_demo 库、建表、随机造数
+python scripts/db_init.py --permission-fixtures  # 补充固定多主体权限测试数据
 ```
 
 ### 4. 启动 MCP Server（HTTP 常驻）
@@ -88,6 +118,35 @@ python scripts/db_init.py --reset   # 创建 sales_demo 库、建表、随机造
 ```bash
 python -m mcp_server.server
 # 监听 http://127.0.0.1:8000/mcp（可用 MCP_HOST / MCP_PORT / MCP_PATH 覆盖）
+```
+
+启用静态 Bearer Token 时，在 `.env` 中配置：
+
+```bash
+AUTH_MODE=static
+AUTH_TOKENS_JSON={"alice-token":"alice"}
+MCP_AUTH_TOKEN=alice-token
+```
+
+服务端验证 token 并映射到 `configs/permissions.yaml` 中的 principal；Agent 会在 MCP HTTP 请求中发送 `Authorization: Bearer ...`。
+
+启用外部 OAuth 2.1 / JWT 时：
+
+```bash
+AUTH_MODE=jwt
+AUTH_JWT_ISSUER=https://issuer.example
+AUTH_JWT_AUDIENCE=http://127.0.0.1:8000/mcp
+AUTH_JWT_JWKS_URL=https://issuer.example/.well-known/jwks.json
+AUTH_JWT_ALGORITHMS=RS256
+MCP_AUTH_TOKEN=<access-token>
+```
+
+策略存 MySQL 并启用热加载：
+
+```bash
+POLICY_STORE=mysql
+POLICY_RELOAD_SECONDS=5
+python -m mcp_server.policy_admin publish configs/permissions.yaml --actor admin --reason v0.3
 ```
 
 ### 5. 跑 Agent
@@ -116,8 +175,12 @@ mcp_server/             Server 侧
   tools/
     schema.py           list_tables / get_schema
     query.py            run_query（仅 MCP 协议转换，委托 QueryService）
+    policy_admin.py     策略状态、热加载、版本列表、导出与发布工具
   services/
-    query_service.py    编排层：安全校验 → LIMIT 注入 → 执行 → 错误收敛
+    query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
+  auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
+  authorization/         授权：RBAC / ACL / 列可见性 / RLS / SQL 策略改写 / 审计
+                        + 策略版本存储与热加载 / CTE 列血缘 / JSON 审计
   security/             只读安全防线
     models.py           数据模型（策略/解析结果/校验结果/查询结果）
     parser.py           基于 sqlglot 的 AST 解析（表/列/函数/JOIN/子查询深度）
@@ -126,14 +189,20 @@ mcp_server/             Server 侧
   database/
     connection.py       pymysql 连接与游标上下文
     executor.py         只读查询执行（超时 + 行数 + 字节上限），不含安全判定
+  policy_admin.py       策略管理 CLI：validate/status/publish/list/export
 
 configs/security.yaml   安全策略（只读白名单/系统库/表列 Allowlist/JOIN/成本限制）
+configs/permissions.yaml 权限策略（角色、主体、表/列 ACL、行级策略）
 
 tests/                  单元测试（pytest）
   test_sql_parser.py    解析：拆分、分类、抽表名、标识符
   test_sql_policy.py    策略：加载与关键字/正则/系统库匹配
   test_sql_validator.py 校验流水线：放行与各类拒绝
   test_query.py         run_query：校验拦截、LIMIT 补全、错误收敛
+  test_authorization.py RBAC/ACL/列展开/RLS/schema 裁剪/静态认证
+  test_policy_manager.py 策略序列化、版本存储与热加载
+  test_policy_admin.py   策略管理工具权限与发布流程
+  test_permission_integration.py 真实 MySQL 多主体与 CTE 集成测试
 
 scripts/                辅助脚本
   db_init.py            建库、建表、造数
@@ -148,24 +217,31 @@ examples.md             已验证问题、SQL 与结果、8 类测试报告
 ```bash
 python -m pytest -q                      # 全部单元测试（不依赖数据库）
 python -m pytest tests/test_sql_validator.py -q
+python -m pytest tests/test_authorization.py -q
 
 # 可选：连真实数据库的集成用例（默认跳过）
 $env:RUN_DB_TESTS=1; python -m pytest tests/test_query.py -q   # PowerShell
+$env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   # 多主体验收
 ```
 
 ## 生产化要点
 
 - **只读三层纵深**：Agent 约定只读 → MCP Server 基于 AST 的 Allowlist 校验（语句 / 表 / 列 ACL / JOIN 上限 / 系统库封禁 / 行数 + 字节 + 长度 + 并发）→ 数据库账号建议只授 SELECT 权限
+- **请求级权限**：Bearer Token → Principal → RBAC/ACL/RLS；角色与主体属性只从服务端策略解析，不接受模型或工具参数自报身份
+- **授权后再校验**：RLS 与 `SELECT *` 展开后再次经过 AST 安全校验，避免策略改写引入新的越权面
 - **策略外置**：安全规则集中在 `configs/security.yaml`，收紧/放宽无需改代码；`mcp_server/security/` 负责解析与判定
 - **校验先于连库**：`run_query` 先校验再建连，恶意 SQL 在无数据库时也会被直接拒绝
 - **凭证隔离**：连接串、Key 全部走 `.env`，代码零硬编码；`.env` 已被 `.gitignore` 拦截
 - **版本注意**：本项目用 mcp **2.x** 的 `MCPServer`（v1 的 `FastMCP` 已改名，勿用旧教程 API）
+- **策略生命周期**：MySQL 版本表保存 document，active 指针原子切换；查询前按 TTL 检查并支持手动强制重载
+- **审计**：授权决策和查询结果使用 JSON 结构化日志，记录 principal、roles、表、策略、结果列、行数、耗时和 SQL 指纹
 
 ## 已知边界
 
 - 关键字黑名单是**粗粒度**防线，只应对常规风险；生产环境仍应以数据库最小权限（只读账号、禁止 UDF/`LOAD_FILE` 等）为根本
 - 解析基于 `sqlglot` 的 AST，表/列/函数/JOIN 取自真实语法结构而非字符串匹配；`@@version` 这类符号 token AST 不可见，故保留 `forbidden_patterns` 作辅助防线兜底
-- 列级 ACL 依赖 AST 中的显式列引用：`SELECT *` 不产生列引用，无法被列 Allowlist 覆盖；需严格列管控时应禁用 `*`（如改写为显式列清单）
+- V0.3 已支持普通 CTE、嵌套 CTE 与派生表的列血缘；无法完整解析血缘时仍 fail closed
+- 静态 Bearer Token 用于本地测试；生产认证应使用 `AUTH_MODE=jwt` 接入外部 OAuth 2.1 / JWKS
 
 ## License
 

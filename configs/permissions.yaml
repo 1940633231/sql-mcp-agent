@@ -1,0 +1,153 @@
+# V0.3 授权策略
+# 身份认证负责确认 subject；本文件只在服务端解析该 subject 的角色和属性。
+# 冲突语义：显式 deny > allow > 默认拒绝。
+
+default_principal: local-dev
+
+roles:
+  admin:
+    permissions:
+      - "*"
+    bypass_rls: true
+
+  analyst:
+    permissions:
+      - query:run
+      - schema:list
+      - schema:read
+    bypass_rls: false
+
+  viewer:
+    permissions:
+      - schema:list
+      - schema:read
+    bypass_rls: false
+
+principals:
+  # AUTH_MODE=disabled 或 stdio 模式使用的本地开发身份。
+  local-dev:
+    roles: [admin]
+    attributes: {}
+
+  alice:
+    roles: [analyst]
+    attributes:
+      industry: 电子
+      company_ids: [9001, 9002]
+
+  bob:
+    roles: [analyst]
+    attributes:
+      industry: 医药
+      company_ids: [9003, 9004]
+
+  auditor:
+    roles: [viewer]
+    attributes: {}
+
+# RBAC 控制功能权限；ACL 控制具体表/列。表规则没有匹配到 allow 时默认拒绝。
+acl:
+  - subjects:
+      roles: [admin]
+    resource:
+      type: table
+      name: "*"
+    action: select
+    effect: allow
+
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: table
+      name: company
+    action: select
+    effect: allow
+
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: table
+      name: sale_records
+    action: select
+    effect: allow
+
+  # 一旦 analyst 出现列级规则，company 的其他列就走 allowlist 兜底。
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: column
+      table: company
+      name: company_id
+    action: select
+    effect: allow
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: column
+      table: company
+      name: name
+    action: select
+    effect: allow
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: column
+      table: company
+      name: industry
+    action: select
+    effect: allow
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: column
+      table: company
+      name: headquarters
+    action: select
+    effect: allow
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: column
+      table: company
+      name: founded_year
+    action: select
+    effect: allow
+  - subjects:
+      roles: [analyst]
+    resource:
+      type: column
+      table: company
+      name: employees
+    action: select
+    effect: deny
+
+  # viewer 只能查看允许范围内的 schema，不能调用 run_query。
+  - subjects:
+      roles: [viewer]
+    resource:
+      type: table
+      name: company
+    action: select
+    effect: allow
+
+# RLS 在表/列 ACL 放行后追加行过滤条件；受保护表无适用策略时默认拒绝。
+row_policies:
+  - name: analyst-company-industry
+    subjects:
+      roles: [analyst]
+    tables: [company]
+    actions: [select]
+    predicate:
+      column: industry
+      operator: eq
+      value_from: principal.attributes.industry
+
+  - name: analyst-sale-company-scope
+    subjects:
+      roles: [analyst]
+    tables: [sale_records]
+    actions: [select]
+    predicate:
+      column: company_id
+      operator: in
+      value_from: principal.attributes.company_ids

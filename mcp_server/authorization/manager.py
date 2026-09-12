@@ -13,15 +13,20 @@ from typing import Protocol
 import yaml
 
 from .. import config
-from ..database.connection import db_cursor
+from ..database.connection import policy_db_cursor, policy_db_transaction
 from .models import PermissionPolicy
 from .audit import log_event
 from .policy import (
     DEFAULT_POLICY_PATH,
+    load_policy_document,
     load_permission_policy,
     permission_policy_from_dict,
     permission_policy_to_dict,
 )
+
+
+class PolicyConflictError(RuntimeError):
+    """The active policy changed since the publisher loaded it."""
 
 
 
@@ -38,7 +43,9 @@ class PolicyRecord:
 class PolicyStore(Protocol):
     def get_active(self) -> PolicyRecord | None: ...
 
-    def publish(self, document: dict, actor: str = "", reason: str = "") -> PolicyRecord: ...
+    def publish(
+        self, document: dict, actor: str = "", reason: str = "", expected_version: str | None = None
+    ) -> PolicyRecord: ...
 
     def list_versions(self, limit: int = 20) -> list[PolicyRecord]: ...
 
@@ -50,9 +57,7 @@ class FilePolicyStore:
         self.path = Path(path) if path else DEFAULT_POLICY_PATH
 
     def _read(self) -> dict:
-        if not self.path.exists():
-            return {}
-        return yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
+        return load_policy_document(self.path)
 
     def get_active(self) -> PolicyRecord | None:
         if not self.path.exists():
@@ -67,7 +72,10 @@ class FilePolicyStore:
             ).isoformat(),
         )
 
-    def publish(self, document: dict, actor: str = "", reason: str = "") -> PolicyRecord:
+    def publish(
+        self, document: dict, actor: str = "", reason: str = "", expected_version: str | None = None
+    ) -> PolicyRecord:
+        _assert_expected(self.get_active(), expected_version)
         permission_policy_from_dict(document)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
@@ -96,7 +104,10 @@ class MemoryPolicyStore:
     def get_active(self) -> PolicyRecord | None:
         return self._records[-1] if self._records else None
 
-    def publish(self, document: dict, actor: str = "", reason: str = "") -> PolicyRecord:
+    def publish(
+        self, document: dict, actor: str = "", reason: str = "", expected_version: str | None = None
+    ) -> PolicyRecord:
+        _assert_expected(self.get_active(), expected_version)
         permission_policy_from_dict(document)
         record = PolicyRecord(
             version=_document_version(document),
@@ -124,7 +135,8 @@ class MySqlPolicyStore:
             return
         version_table = config.POLICY_VERSION_TABLE
         active_table = config.POLICY_ACTIVE_TABLE
-        with db_cursor() as cur:
+        audit_table = config.POLICY_AUDIT_TABLE
+        with policy_db_cursor() as cur:
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS `%s` ("
                 "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
@@ -134,6 +146,17 @@ class MySqlPolicyStore:
                 "reason VARCHAR(500) NOT NULL DEFAULT '',"
                 "created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" % version_table
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS `%s` ("
+                "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                "event VARCHAR(32) NOT NULL,"
+                "version VARCHAR(96) NOT NULL,"
+                "actor VARCHAR(190) NOT NULL DEFAULT '',"
+                "reason VARCHAR(500) NOT NULL DEFAULT '',"
+                "created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+                "INDEX idx_policy_events_version (version)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" % audit_table
             )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS `%s` ("
@@ -154,7 +177,7 @@ class MySqlPolicyStore:
             "FROM `%s` a JOIN `%s` v ON v.id=a.version_id WHERE a.id=1"
             % (config.POLICY_ACTIVE_TABLE, config.POLICY_VERSION_TABLE)
         )
-        with db_cursor() as cur:
+        with policy_db_cursor() as cur:
             cur.execute(sql)
             row = cur.fetchone()
         if not row:
@@ -171,29 +194,49 @@ class MySqlPolicyStore:
             updated_at=str(row.get("created_at") or ""),
         )
 
-    def publish(self, document: dict, actor: str = "", reason: str = "") -> PolicyRecord:
+    def publish(
+        self, document: dict, actor: str = "", reason: str = "", expected_version: str | None = None
+    ) -> PolicyRecord:
         permission_policy_from_dict(document)
         self.ensure_schema()
         version = _document_version(document)
         payload = json.dumps(document, ensure_ascii=False, sort_keys=True)
-        with db_cursor() as cur:
+        with policy_db_transaction() as cur:
+            cur.execute(
+                "SELECT v.version FROM `%s` a JOIN `%s` v ON v.id=a.version_id "
+                "WHERE a.id=1 FOR UPDATE" % (config.POLICY_ACTIVE_TABLE, config.POLICY_VERSION_TABLE)
+            )
+            active = cur.fetchone()
+            active_version = active["version"] if active else None
+            if expected_version and active_version != expected_version:
+                raise PolicyConflictError(
+                    "active policy changed: expected %s, got %s"
+                    % (expected_version, active_version)
+                )
             cur.execute(
                 "INSERT INTO `%s` (version, document_json, actor, reason) "
                 "VALUES (%%s, %%s, %%s, %%s) "
-                "ON DUPLICATE KEY UPDATE actor=VALUES(actor), reason=VALUES(reason), "
-                "document_json=VALUES(document_json), created_at=CURRENT_TIMESTAMP(6)"
+                "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)"
                 % config.POLICY_VERSION_TABLE,
                 (version, payload, actor, reason),
             )
-            cur.execute(
-                "SELECT id FROM `%s` WHERE version=%%s" % config.POLICY_VERSION_TABLE,
-                (version,),
-            )
-            version_id = cur.fetchone()["id"]
+            version_id = cur.lastrowid
+            if not version_id:
+                cur.execute(
+                    "SELECT id FROM `%s` WHERE version=%%s" % config.POLICY_VERSION_TABLE,
+                    (version,),
+                )
+                version_id = cur.fetchone()["id"]
             cur.execute(
                 "INSERT INTO `%s` (id, version_id) VALUES (1, %%s) "
-                "ON DUPLICATE KEY UPDATE version_id=VALUES(version_id)" % config.POLICY_ACTIVE_TABLE,
+                "ON DUPLICATE KEY UPDATE version_id=VALUES(version_id)"
+                % config.POLICY_ACTIVE_TABLE,
                 (version_id,),
+            )
+            cur.execute(
+                "INSERT INTO `%s` (event, version, actor, reason) VALUES (%%s, %%s, %%s, %%s)"
+                % config.POLICY_AUDIT_TABLE,
+                ("publish", version, actor, reason),
             )
         log_event("policy_published", source="mysql", version=version, actor=actor, reason=reason)
         record = self.get_active()
@@ -208,7 +251,7 @@ class MySqlPolicyStore:
             "SELECT version, document_json, actor, reason, created_at "
             "FROM `%s` ORDER BY id DESC LIMIT %d" % (config.POLICY_VERSION_TABLE, limit)
         )
-        with db_cursor() as cur:
+        with policy_db_cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
         records = []
@@ -298,8 +341,12 @@ class PolicyManager:
             "updated_at": self._cached.updated_at,
         }
 
-    def publish(self, document: dict, actor: str = "", reason: str = "") -> PolicyRecord:
-        record = self._store.publish(document, actor=actor, reason=reason)
+    def publish(
+        self, document: dict, actor: str = "", reason: str = "", expected_version: str | None = None
+    ) -> PolicyRecord:
+        record = self._store.publish(
+            document, actor=actor, reason=reason, expected_version=expected_version
+        )
         with self._lock:
             self._cached = record
             self._cached_policy = permission_policy_from_dict(record.document)
@@ -316,6 +363,14 @@ def _build_store() -> PolicyStore:
     if config.POLICY_STORE == "mysql":
         return MySqlPolicyStore()
     raise ValueError("不支持的 POLICY_STORE：%s（可选 file/mysql）" % config.POLICY_STORE)
+
+
+def _assert_expected(active: PolicyRecord | None, expected_version: str | None) -> None:
+    if expected_version and (active is None or active.version != expected_version):
+        current = active.version if active else None
+        raise PolicyConflictError(
+            "active policy changed: expected %s, got %s" % (expected_version, current)
+        )
 
 
 def _document_version(document: dict, mtime: int | None = None) -> str:

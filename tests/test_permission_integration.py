@@ -5,7 +5,11 @@ Run with:
 """
 import os
 
+import pymysql
+
 import pytest
+
+from mcp_server import config
 
 from mcp_server.auth.models import Principal, RequestContext
 from mcp_server.authorization.policy import load_permission_policy, permission_policy_to_dict
@@ -19,6 +23,27 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_TESTS") != "1",
     reason="需设置 RUN_DB_TESTS=1 且 MySQL 可用",
 )
+
+
+def _configure_policy_db(monkeypatch):
+    base = config.get_connection()
+    monkeypatch.setattr(config, "POLICY_DB_HOST", base["host"])
+    monkeypatch.setattr(config, "POLICY_DB_PORT", base["port"])
+    monkeypatch.setattr(config, "POLICY_DB_USER", base["user"])
+    monkeypatch.setattr(config, "POLICY_DB_PASSWORD", base["password"])
+    monkeypatch.setattr(config, "POLICY_DB_DATABASE", "mcp_policy")
+    try:
+        conn = pymysql.connect(
+            host=base["host"], port=base["port"], user=base["user"],
+            password=base["password"], charset="utf8mb4", autocommit=True,
+        )
+    except Exception as exc:
+        pytest.skip("policy DB unavailable: %s" % exc)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE DATABASE IF NOT EXISTS `mcp_policy` DEFAULT CHARACTER SET utf8mb4")
+    finally:
+        conn.close()
 
 
 def _context(subject: str) -> RequestContext:
@@ -42,7 +67,7 @@ def _service() -> QueryService:
 def test_admin_sees_all_permission_fixtures():
     result = _service().run(
         "SELECT * FROM company WHERE company_id BETWEEN 9001 AND 9006 ORDER BY company_id",
-        _context("local-dev"),
+        _context("query-admin"),
     )
     assert "error" not in result, result
     assert [row["company_id"] for row in result["rows"]] == [9001, 9002, 9003, 9004, 9005, 9006]
@@ -112,7 +137,8 @@ def test_viewer_cannot_run_query():
     assert result["code"] == "permission_denied"
 
 
-def test_mysql_policy_store_versioning_and_hot_reload():
+def test_mysql_policy_store_versioning_and_hot_reload(monkeypatch):
+    _configure_policy_db(monkeypatch)
     policy = load_permission_policy()
     store = MySqlPolicyStore()
     manager = PolicyManager(store, reload_seconds=0)

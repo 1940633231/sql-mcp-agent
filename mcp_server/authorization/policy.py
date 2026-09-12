@@ -5,6 +5,7 @@ from types import MappingProxyType
 import yaml
 
 from .models import AclRule, PermissionPolicy, PolicySubjects, PrincipalPolicy, RolePolicy, RowPolicy
+from .validation import SCHEMA_VERSION, build_policy, compile_policy, load_policy_document, validate_policy_document
 
 DEFAULT_POLICY_PATH = Path(__file__).resolve().parents[2] / "configs" / "permissions.yaml"
 
@@ -95,6 +96,7 @@ def permission_policy_from_dict(data: dict | None) -> PermissionPolicy:
 def permission_policy_to_dict(policy: PermissionPolicy) -> dict:
     """Serialize a normalized policy for persistence and admin APIs."""
     return {
+        "version": SCHEMA_VERSION,
         "default_principal": policy.default_principal,
         "roles": {
             name: {"permissions": sorted(role.permissions), "bypass_rls": role.bypass_rls}
@@ -147,3 +149,14 @@ def load_permission_policy(path: str | Path | None = None) -> PermissionPolicy:
     if policy_path.exists():
         data = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
     return permission_policy_from_dict(data)
+
+
+def permission_policy_from_dict(data: dict | None) -> PermissionPolicy:
+    """Compile a policy through schema, semantic, and security validation."""
+    return compile_policy(data or {})
+
+
+def load_permission_policy(path: str | Path | None = None) -> PermissionPolicy:
+    """Load a file with duplicate-key detection and strict validation."""
+    policy_path = Path(path) if path else DEFAULT_POLICY_PATH
+    return compile_policy(load_policy_document(policy_path))

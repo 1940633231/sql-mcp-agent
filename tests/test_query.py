@@ -11,7 +11,10 @@ import pymysql
 import pytest
 
 from mcp_server.security.models import QueryResult
+from mcp_server.auth.models import Principal, RequestContext
+from mcp_server.authorization.policy import load_permission_policy
 from mcp_server.security.validator import SqlValidator
+from mcp_server.services import query_service as query_service_module
 from mcp_server.services.query_service import QueryService
 
 
@@ -27,8 +30,16 @@ def _ok_query_result(rows=None, truncated=False):
 
 
 @pytest.fixture
-def service():
+def service(monkeypatch):
     # 用真实 validator（真实规则），executor 不落地、靠 monkeypatch 注入
+    policy = load_permission_policy()
+    raw = policy.principals["query-admin"]
+    context = RequestContext(Principal(raw.subject, raw.roles, raw.attributes))
+    monkeypatch.setattr(
+        query_service_module,
+        "current_request_context",
+        lambda source="mcp": context,
+    )
     return QueryService(validator=SqlValidator())
 
 

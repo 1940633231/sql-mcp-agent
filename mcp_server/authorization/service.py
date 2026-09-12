@@ -33,7 +33,10 @@ class AuthorizationService:
 
     def has_permission(self, principal: Principal, permission: str) -> bool:
         permissions = self.policy.permissions_for_roles(principal.roles)
-        return "*" in permissions or permission.lower() in permissions
+        normalized = permission.lower()
+        if normalized.startswith("policy:") or normalized == "rls:bypass":
+            return normalized in permissions
+        return "*" in permissions or normalized in permissions
 
     def authorize_table(self, principal: Principal, table: str, action: str = "select") -> bool:
         table = _bare(table)

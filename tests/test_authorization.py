@@ -76,9 +76,13 @@ class TestRbac:
         assert not authz.has_permission(principal, "query:run")
         assert authz.has_permission(principal, "schema:list")
 
-    def test_admin_wildcard_permission(self, policy, authz):
-        principal = context_for(policy, "local-dev").principal
-        assert authz.has_permission(principal, "anything")
+    def test_query_and_policy_admin_are_separated(self, policy, authz):
+        query_admin = context_for(policy, "query-admin").principal
+        policy_admin = context_for(policy, "policy-admin").principal
+        assert authz.has_permission(query_admin, "query:run")
+        assert not authz.has_permission(query_admin, "policy:publish")
+        assert authz.has_permission(policy_admin, "policy:publish")
+        assert not authz.has_permission(policy_admin, "query:run")
 
     def test_rbac_gate_rejects_query_for_viewer(self, policy, authz):
         result = authz.authorize_sql(
@@ -189,9 +193,9 @@ class TestRowLevelSecurity:
         assert result.allowed
         assert "x'' OR 1=1 --" in result.sql
 
-    def test_admin_bypasses_rls(self, policy, authz):
+    def test_query_admin_bypasses_rls(self, policy, authz):
         result = authz.authorize_sql(
-            "SELECT name FROM company", context_for(policy, "local-dev"), FakeCatalog()
+            "SELECT name FROM company", context_for(policy, "query-admin"), FakeCatalog()
         )
         assert result.allowed
         assert "industry" not in result.sql
@@ -406,8 +410,9 @@ class TestExternalJwt:
             JwtTokenVerifier().verify_token(self._encode(private_pem))
         ) is None
 
-    def test_jwt_claims_resolve_principal_in_hybrid_mode(self, monkeypatch):
-        monkeypatch.setattr(config, "AUTH_PRINCIPAL_MODE", "hybrid")
+    def test_jwt_claims_use_server_side_role_mapping(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTH_PRINCIPAL_MODE", "mapped_claims")
+        monkeypatch.setattr(config, "AUTH_JWT_ROLE_MAP", {"idp-analyst": "analyst"})
         monkeypatch.setattr(config, "AUTH_JWT_ROLES_CLAIM", "roles")
         monkeypatch.setattr(
             config,
@@ -420,13 +425,30 @@ class TestExternalJwt:
         access_token = AccessToken(
             token="jwt", client_id="client", subject="oidc-user",
             scopes=["query:run"],
-            claims={"roles": ["analyst"], "industry": "电子", "company_ids": [9001]}
+            claims={"roles": ["idp-analyst"], "industry": "电子", "company_ids": [9001]}
         )
         principal = principal_for_access_token(access_token)
         assert principal is not None
         assert principal.has_role("analyst")
         assert principal.attributes["industry"] == "电子"
         assert principal.attributes["company_ids"] == [9001]
+
+    def test_policy_mode_rejects_unmapped_jwt_subject(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTH_PRINCIPAL_MODE", "policy")
+        access_token = AccessToken(
+            token="jwt", client_id="client", subject="unmapped-user",
+            scopes=["query:run"], claims={"roles": ["analyst"]}
+        )
+        assert principal_for_access_token(access_token) is None
+
+    def test_claims_cannot_escalate_to_protected_roles(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTH_PRINCIPAL_MODE", "claims")
+        monkeypatch.setattr(config, "AUTH_ALLOW_RAW_ROLE_CLAIMS", True)
+        access_token = AccessToken(
+            token="jwt", client_id="client", subject="claim-admin",
+            scopes=["query:run"], claims={"roles": ["query_admin", "policy_admin"]}
+        )
+        assert principal_for_access_token(access_token) is None
 
     def test_jwks_url_verification(self, monkeypatch):
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

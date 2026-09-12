@@ -51,9 +51,10 @@ def principal_for_access_token(access_token: AccessToken) -> Principal | None:
             attributes=attributes,
         )
 
-    if config.AUTH_PRINCIPAL_MODE not in {"hybrid", "claims"}:
+    if config.AUTH_PRINCIPAL_MODE not in {"claims", "mapped_claims"}:
         return None
-    roles = _claim_list(claims.get(config.AUTH_JWT_ROLES_CLAIM))
+    claimed_roles = _claim_list(claims.get(config.AUTH_JWT_ROLES_CLAIM))
+    roles = _map_claim_roles(claimed_roles, policy)
     if not roles:
         return None
     return Principal(
@@ -61,6 +62,20 @@ def principal_for_access_token(access_token: AccessToken) -> Principal | None:
         roles=frozenset(role.lower() for role in roles),
         attributes=claim_attributes,
     )
+
+
+def _map_claim_roles(claimed_roles: list[str], policy) -> set[str]:
+    mapped: set[str] = set()
+    for claimed in claimed_roles:
+        target = config.AUTH_JWT_ROLE_MAP.get(claimed)
+        if target:
+            mapped.add(target.lower())
+    if config.AUTH_ALLOW_RAW_ROLE_CLAIMS:
+        mapped.update(role.lower() for role in claimed_roles)
+    for role in policy.roles.values():
+        if role.bypass_rls or any(permission.startswith("policy:") for permission in role.permissions):
+            mapped.discard(role.name)
+    return mapped
 
 
 def _claim_list(value) -> list[str]:

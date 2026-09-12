@@ -115,6 +115,8 @@ def build_auth_settings() -> tuple[AuthSettings | None, TokenVerifier | None]:
     mode = config.AUTH_MODE
     if mode == "disabled":
         return None, None
+    if config.AUTH_PRINCIPAL_MODE not in {"policy", "claims", "mapped_claims"}:
+        raise ValueError("不支持的 AUTH_PRINCIPAL_MODE：%s" % config.AUTH_PRINCIPAL_MODE)
 
     if mode == "static":
         if not config.AUTH_TOKENS:

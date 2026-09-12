@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.3.0**（权限系统：Authentication + RBAC + ACL + Table/Column Permission + RLS）
+> **当前版本：v0.3.0**；**开发中：v0.3.1 Policy Control Plane Hardening**
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -68,7 +68,9 @@ MCP Request
 ```
 
 - 策略集中在 `configs/permissions.yaml`，角色、主体、ACL、RLS 均不写死在 SQL 中。
-- `POLICY_STORE=mysql` 时策略存 MySQL 版本表，默认每 5 秒检查 active 版本；支持 CLI/MCP 管理工具。
+- Policy DB 与 Business DB 使用独立连接和账号；MySQL 发布在单事务内完成 active 行锁、版本写入、指针切换和审计。
+- 发布前执行 Schema / Semantic / Security Validation；当前禁止全局 `*`、控制面与查询面混用。
+- 默认 `AUTH_PRINCIPAL_MODE=policy`；JWT claims 必须经过服务端角色映射，不能直接获得 query/policy admin。
 - JWT 模式校验签名、issuer、audience、exp，可通过 JWKS 或静态公钥加载密钥。
 - 决策采用 `deny > allow > 默认拒绝`；受 RLS 保护的表没有适用策略时直接拒绝。
 - 表结构工具同样经过授权：不可见表不返回，列级 ACL 隐藏的字段不会出现在 schema 结果中。
@@ -83,7 +85,8 @@ MCP 对外能力：
 | Tool | `run_query(sql)` | 执行只读 SQL（仅单条 SELECT），返回行数据 |
 | Tool | `get_policy_status()` | 查看 active 权限策略版本与来源 |
 | Tool | `reload_permission_policy()` | 强制热重载策略 |
-| Tool | `publish_permission_policy(document)` | 发布新策略版本（需 `policy:admin`） |
+| Tool | `validate_permission_policy(document)` | 校验策略但不发布（需 `policy:validate`） |
+| Tool | `publish_permission_policy(document, expected_version)` | 事务发布新策略版本（需 `policy:publish`） |
 | Tool | `list_permission_policy_versions(limit)` | 查看策略版本历史 |
 | Tool | `export_permission_policy()` | 导出当前策略 |
 | Resource | `database://schema` | 全库所有表结构（应用预取，省钱省轮次） |
@@ -146,6 +149,13 @@ MCP_AUTH_TOKEN=<access-token>
 ```bash
 POLICY_STORE=mysql
 POLICY_RELOAD_SECONDS=5
+POLICY_DB_HOST=127.0.0.1
+POLICY_DB_PORT=3306
+POLICY_DB_USER=policy_app
+POLICY_DB_PASSWORD=<policy-db-password>
+POLICY_DB_DATABASE=mcp_policy
+python scripts/policy_db_init.py
+python -m mcp_server.policy_admin validate configs/permissions.yaml
 python -m mcp_server.policy_admin publish configs/permissions.yaml --actor admin --reason v0.3
 ```
 
@@ -180,6 +190,7 @@ mcp_server/             Server 侧
     query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
   auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
   authorization/         授权：RBAC / ACL / 列可见性 / RLS / SQL 策略改写 / 审计
+                        + Schema/Semantic/Security Validator / Policy DB / 事务发布
                         + 策略版本存储与热加载 / CTE 列血缘 / JSON 审计
   security/             只读安全防线
     models.py           数据模型（策略/解析结果/校验结果/查询结果）
@@ -201,11 +212,15 @@ tests/                  单元测试（pytest）
   test_query.py         run_query：校验拦截、LIMIT 补全、错误收敛
   test_authorization.py RBAC/ACL/列展开/RLS/schema 裁剪/静态认证
   test_policy_manager.py 策略序列化、版本存储与热加载
+  test_policy_validation.py Schema/Semantic/Security 校验
+  test_policy_db.py      策略库连接隔离与事务边界
   test_policy_admin.py   策略管理工具权限与发布流程
   test_permission_integration.py 真实 MySQL 多主体与 CTE 集成测试
 
 scripts/                辅助脚本
   db_init.py            建库、建表、造数
+  policy_db_init.py     初始化独立策略库
+  migrate_policy_db.py  从业务库迁移历史策略版本
   batch_test.py         8 类问题批量回归 + 恶意 SQL 拦截测试
 
 examples.md             已验证问题、SQL 与结果、8 类测试报告
@@ -228,6 +243,10 @@ $env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   
 
 - **只读三层纵深**：Agent 约定只读 → MCP Server 基于 AST 的 Allowlist 校验（语句 / 表 / 列 ACL / JOIN 上限 / 系统库封禁 / 行数 + 字节 + 长度 + 并发）→ 数据库账号建议只授 SELECT 权限
 - **请求级权限**：Bearer Token → Principal → RBAC/ACL/RLS；角色与主体属性只从服务端策略解析，不接受模型或工具参数自报身份
+- **控制面隔离**：`query_admin`、`policy_admin` 分离；全局 `*`、控制面权限与查询权限混用会被 Validator 拒绝
+- **JWT 默认策略模式**：`AUTH_PRINCIPAL_MODE=policy`；claims 模式必须通过服务端角色映射，原始 JWT 角色不能升级为 admin
+- **独立 Policy DB**：策略库使用 `POLICY_DB_*`，业务库账号不再需要策略表写权限
+- **原子发布**：active 行锁、版本写入、指针切换和审计在同一事务提交；支持 `expected_version` 防止覆盖
 - **授权后再校验**：RLS 与 `SELECT *` 展开后再次经过 AST 安全校验，避免策略改写引入新的越权面
 - **策略外置**：安全规则集中在 `configs/security.yaml`，收紧/放宽无需改代码；`mcp_server/security/` 负责解析与判定
 - **校验先于连库**：`run_query` 先校验再建连，恶意 SQL 在无数据库时也会被直接拒绝

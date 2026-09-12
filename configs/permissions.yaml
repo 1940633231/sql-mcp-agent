@@ -2,13 +2,25 @@
 # 身份认证负责确认 subject；本文件只在服务端解析该 subject 的角色和属性。
 # 冲突语义：显式 deny > allow > 默认拒绝。
 
+version: 1
+
 default_principal: local-dev
 
 roles:
-  admin:
+  query_admin:
     permissions:
-      - "*"
+      - query:run
+      - schema:list
+      - schema:read
     bypass_rls: true
+
+  policy_admin:
+    permissions:
+      - policy:read
+      - policy:validate
+      - policy:publish
+      - policy:rollback
+    bypass_rls: false
 
   analyst:
     permissions:
@@ -26,7 +38,17 @@ roles:
 principals:
   # AUTH_MODE=disabled 或 stdio 模式使用的本地开发身份。
   local-dev:
-    roles: [admin]
+    roles: [analyst]
+    attributes:
+      industry: 电子
+      company_ids: [9001, 9002]
+
+  query-admin:
+    roles: [query_admin]
+    attributes: {}
+
+  policy-admin:
+    roles: [policy_admin]
     attributes: {}
 
   alice:
@@ -48,7 +70,7 @@ principals:
 # RBAC 控制功能权限；ACL 控制具体表/列。表规则没有匹配到 allow 时默认拒绝。
 acl:
   - subjects:
-      roles: [admin]
+      roles: [query_admin]
     resource:
       type: table
       name: "*"

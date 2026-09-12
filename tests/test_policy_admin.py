@@ -22,11 +22,14 @@ def test_admin_can_publish_and_reload(monkeypatch):
     monkeypatch.setattr(
         policy_admin,
         "current_request_context",
-        lambda source="policy-admin": _context(policy, "local-dev"),
+        lambda source="policy-admin": _context(policy, "policy-admin"),
     )
 
     status = policy_admin.get_policy_status()
     assert status["available"] is True
+    assert policy_admin.validate_permission_policy(
+        permission_policy_to_dict(policy)
+    )["valid"] is True
     published = policy_admin.publish_permission_policy(
         permission_policy_to_dict(policy), reason="test"
     )

@@ -75,8 +75,12 @@ AUTH_JWT_SUBJECT_CLAIM = os.getenv("AUTH_JWT_SUBJECT_CLAIM", "sub")
 AUTH_JWT_ROLES_CLAIM = os.getenv("AUTH_JWT_ROLES_CLAIM", "roles")
 AUTH_JWT_SCOPES_CLAIM = os.getenv("AUTH_JWT_SCOPES_CLAIM", "scope")
 AUTH_JWT_ATTRIBUTES = _json_dict("AUTH_JWT_ATTRIBUTES_JSON")
-# policy: 仅使用服务端 principal；hybrid: 策略优先，无策略时使用 JWT claims。
-AUTH_PRINCIPAL_MODE = os.getenv("AUTH_PRINCIPAL_MODE", "hybrid").strip().lower()
+AUTH_JWT_ROLE_MAP = _json_dict("AUTH_JWT_ROLE_MAP_JSON")
+AUTH_ALLOW_RAW_ROLE_CLAIMS = os.getenv(
+    "AUTH_ALLOW_RAW_ROLE_CLAIMS", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+# policy: 仅使用服务端 principal；claims: 使用服务端角色映射后的 JWT claims。
+AUTH_PRINCIPAL_MODE = os.getenv("AUTH_PRINCIPAL_MODE", "policy").strip().lower()
 
 # ===== Permission Policy Store / Hot Reload =====
 # file: configs/permissions.yaml；mysql: 版本表 + active 指针，支持热更新。
@@ -84,3 +88,28 @@ POLICY_STORE = os.getenv("POLICY_STORE", "file").strip().lower()
 POLICY_RELOAD_SECONDS = int(os.getenv("POLICY_RELOAD_SECONDS", "5"))
 POLICY_VERSION_TABLE = "permission_policy_versions"
 POLICY_ACTIVE_TABLE = "permission_policy_active"
+POLICY_DB_HOST = os.getenv("POLICY_DB_HOST", os.getenv("MYSQL_HOST", "127.0.0.1"))
+POLICY_DB_PORT = int(os.getenv("POLICY_DB_PORT", os.getenv("MYSQL_PORT", "3306")))
+POLICY_DB_USER = os.getenv("POLICY_DB_USER", "")
+POLICY_DB_PASSWORD = os.getenv("POLICY_DB_PASSWORD", "")
+POLICY_DB_DATABASE = os.getenv("POLICY_DB_DATABASE", "")
+POLICY_DB_CHARSET = os.getenv("POLICY_DB_CHARSET", "utf8mb4")
+POLICY_DB_CONNECT_TIMEOUT = int(os.getenv("POLICY_DB_CONNECT_TIMEOUT", "10"))
+POLICY_AUDIT_TABLE = "permission_policy_events"
+
+
+def get_policy_connection() -> dict:
+    """Return the dedicated policy database connection parameters."""
+    if not POLICY_DB_DATABASE or not POLICY_DB_USER:
+        raise ValueError(
+            "POLICY_STORE=mysql 时必须配置独立的 POLICY_DB_DATABASE 与 POLICY_DB_USER"
+        )
+    return {
+        "host": POLICY_DB_HOST,
+        "port": POLICY_DB_PORT,
+        "user": POLICY_DB_USER,
+        "password": POLICY_DB_PASSWORD,
+        "database": POLICY_DB_DATABASE,
+        "charset": POLICY_DB_CHARSET,
+        "connect_timeout": POLICY_DB_CONNECT_TIMEOUT,
+    }

@@ -1,7 +1,7 @@
 """tests/test_policy_manager.py — policy persistence and hot reload tests."""
 import pytest
 
-from mcp_server.authorization.manager import MemoryPolicyStore, PolicyManager
+from mcp_server.authorization.manager import MemoryPolicyStore, PolicyConflictError, PolicyManager
 from mcp_server.authorization.policy import (
     load_permission_policy,
     permission_policy_from_dict,
@@ -27,6 +27,19 @@ def test_memory_store_publish_and_hot_reload():
 
     assert manager.get().default_principal == "alice"
     assert manager.status()["actor"] == "test"
+
+
+def test_expected_version_prevents_lost_update():
+    store = MemoryPolicyStore(permission_policy_to_dict(load_permission_policy()))
+    manager = PolicyManager(store, reload_seconds=0)
+    document = permission_policy_to_dict(manager.get())
+
+    try:
+        manager.publish(document, expected_version="stale-version")
+    except PolicyConflictError:
+        pass
+    else:
+        raise AssertionError("expected version conflict")
 
 
 def test_invalid_policy_is_rejected_before_publish():

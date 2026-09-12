@@ -156,6 +156,11 @@ def test_rls_aggregation_filters_before_sum():
 
 def test_rls_subquery_and_union_are_filtered():
     service = _service()
+    # 单表 RLS 结果（数据无关的基准：alice 在 company 上是 industry 过滤）
+    single = {
+        row["company_id"]
+        for row in service.run("SELECT company_id FROM company", _context("alice"))["rows"]
+    }
     subquery = service.run(
         "SELECT x.company_id FROM (SELECT * FROM company) x "
         "WHERE x.company_id BETWEEN 9001 AND 9006",
@@ -165,8 +170,10 @@ def test_rls_subquery_and_union_are_filtered():
         "SELECT company_id FROM company UNION ALL SELECT company_id FROM company",
         _context("alice"),
     )
+    # 子查询（带 9001-9006 范围）：范围内仅 alice 可见（权限夹具保证 9001/9002 为其公司）
     assert {row["company_id"] for row in subquery["rows"]} == {9001, 9002}
-    assert {row["company_id"] for row in union["rows"]} == {9001, 9002}
+    # UNION 两个分支都必须被 RLS 过滤 → 结果集与单表 RLS 结果完全一致（而非泄露全集）
+    assert {row["company_id"] for row in union["rows"]} == single
 
 
 def test_mysql_audit_sink_persists_policy_version(monkeypatch):

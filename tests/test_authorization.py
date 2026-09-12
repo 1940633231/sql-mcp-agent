@@ -319,12 +319,29 @@ class TestSchemaVisibility:
     def test_table_and_column_discovery_is_filtered(self, policy, monkeypatch):
         from mcp_server.tools import schema as schema_tools
 
+        columns = {
+            "company": ["company_id", "name", "industry", "headquarters", "founded_year", "employees"],
+            "sale_records": ["id", "company_id", "amount", "record_date"],
+        }
+
         class FakeExecutor:
             def list_tables(self):
                 return ["company", "sale_records", "user"]
 
-            def get_schema(self, table_name):
-                return FakeCatalog().get_schema(table_name)
+            def get_table_dict(self, table_name):
+                return {
+                    "table": table_name,
+                    "label": "", "description": "",
+                    "primary_keys": ["company_id"],
+                    # company_id -> company.company_id（可见）；另有指向无权表 user/无权列 employees 的外键
+                    "foreign_keys": [
+                        {"COLUMN_NAME": "company_id", "REFERENCED_TABLE_NAME": "company", "REFERENCED_COLUMN_NAME": "company_id"},
+                        {"COLUMN_NAME": "company_id", "REFERENCED_TABLE_NAME": "user", "REFERENCED_COLUMN_NAME": "id"},
+                        {"COLUMN_NAME": "company_id", "REFERENCED_TABLE_NAME": "company", "REFERENCED_COLUMN_NAME": "employees"},
+                    ],
+                    "indexes": [{"column": "company_id"}],
+                    "columns": [{"name": col} for col in columns[table_name]],
+                }
 
         monkeypatch.setattr(schema_tools, "_catalog", FakeExecutor())
         monkeypatch.setattr(
@@ -335,7 +352,12 @@ class TestSchemaVisibility:
 
         assert schema_tools.list_tables() == ["company", "sale_records"]
         visible = schema_tools.get_schema("company")
-        assert "employees" not in {row["Field"] for row in visible}
+        assert "employees" not in {row["name"] for row in visible["columns"]}
+        # 外键只保留被引用表/列都可见的那条，指向无权表/无权列的被裁剪
+        assert len(visible["foreign_keys"]) == 1
+        assert visible["foreign_keys"][0]["REFERENCED_COLUMN_NAME"] == "company_id"
+        # 主键是可见列，保留
+        assert visible["primary_keys"] == ["company_id"]
 
 
 class TestStaticAuthentication:

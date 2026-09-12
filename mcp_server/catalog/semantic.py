@@ -63,33 +63,55 @@ class SemanticHit:
 
 
 def load_semantics(path: str | Path | None = None) -> SemanticMetadata:
-    """读取 YAML 语义元数据；文件不存在或缺字段时回退空元数据，绝不抛错。"""
+    """读取 YAML 语义元数据；文件缺失、畸形、缺字段时均安全回退空元数据，绝不抛错。"""
     if path is None:
         path = config.SCHEMA_DESC_PATH or DEFAULT_SCHEMA_DESC_PATH
     p = Path(path)
     data = {}
     if p.exists():
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        try:
+            loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            loaded = None
+        if isinstance(loaded, dict):
+            data = loaded
+
+    raw_tables = data.get("tables")
+    raw_columns = data.get("columns")
+    raw_tables = raw_tables if isinstance(raw_tables, dict) else {}
+    raw_columns = raw_columns if isinstance(raw_columns, dict) else {}
 
     tables: dict[str, TableDesc] = {}
-    for name, t in (data.get("tables") or {}).items():
-        t = t or {}
+    for name, t in raw_tables.items():
+        t = t if isinstance(t, dict) else {}
         tables[str(name).lower()] = TableDesc(
             label=str(t.get("label") or ""),
             description=str(t.get("description") or ""),
         )
 
     columns: dict[str, dict[str, ColumnDesc]] = {}
-    for table, cols in (data.get("columns") or {}).items():
+    for table, cols in raw_columns.items():
         table = str(table).lower()
+        if not isinstance(cols, dict):
+            continue
         col_map = columns.setdefault(table, {})
-        for col, c in (cols or {}).items():
-            c = c or {}
+        for col, c in cols.items():
+            c = c if isinstance(c, dict) else {}
+            syns = c.get("synonyms") or []
+            synonyms = (
+                tuple(str(s) for s in syns)
+                if isinstance(syns, (list, tuple))
+                else ()
+            )
+            evs = c.get("enum_values") or []
+            enum_values = ()
+            if isinstance(evs, (list, tuple)):
+                enum_values = tuple(dict(v) for v in evs if isinstance(v, dict))
             col_map[str(col).lower()] = ColumnDesc(
                 label=str(c.get("label") or ""),
                 description=str(c.get("description") or ""),
-                synonyms=tuple(str(s) for s in (c.get("synonyms") or [])),
-                enum_values=tuple(dict(v) for v in (c.get("enum_values") or [])),
+                synonyms=synonyms,
+                enum_values=enum_values,
             )
     return SemanticMetadata(tables=tables, columns=columns)
 
@@ -97,6 +119,11 @@ def load_semantics(path: str | Path | None = None) -> SemanticMetadata:
 def _norm(value: str) -> str:
     """归一化：去 `_`/空白并转小写，用于匹配比较。"""
     return re.sub(r"[\s_]+", "", (value or "")).lower()
+
+
+def normalize(value: str) -> str:
+    """公开归一化入口，供检索与后续叠加物理名匹配复用。"""
+    return _norm(value)
 
 
 def _rank_match(needle: str, key: str, candidates: list[tuple[str, int]]) -> int | None:

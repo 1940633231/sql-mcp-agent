@@ -4,7 +4,9 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
+from .. import config
 from ..database.connection import db_cursor
 from ..security import parser
 from . import semantic
@@ -17,6 +19,13 @@ class CatalogStats:
     list_misses: int
     table_hits: int
     table_misses: int
+
+
+def _mtime_ns(path) -> int | None:
+    try:
+        return Path(path).stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 class SchemaCatalog:
@@ -49,7 +58,10 @@ class SchemaCatalog:
         self._table_hits = 0
         self._table_misses = 0
         self._lock = threading.RLock()
-        self._semantic: semantic.SemanticMetadata = semantic.load_semantics()
+        self._semantic_path = config.SCHEMA_DESC_PATH or semantic.DEFAULT_SCHEMA_DESC_PATH
+        self._semantic: semantic.SemanticMetadata = semantic.load_semantics(self._semantic_path)
+        self._semantic_mtime = _mtime_ns(self._semantic_path)
+        self._semantic_checked = time.monotonic()
 
     def list_tables(self) -> list[str]:
         now = time.monotonic()
@@ -67,6 +79,7 @@ class SchemaCatalog:
         return list(tables)
 
     def get_table(self, table_name: str, refresh: bool = False) -> TableSchema:
+        self._maybe_reload_semantics()
         self._validate_table(table_name)
         now = time.monotonic()
         with self._lock:
@@ -83,6 +96,10 @@ class SchemaCatalog:
 
     def get_columns(self, table_name: str) -> list[ColumnSchema]:
         return list(self.get_table(table_name).columns)
+
+    def get_table_dict(self, table_name: str) -> dict:
+        """返回表的完整语义 DTO（表级元数据 + 外键 + 索引 + 列含枚举）。"""
+        return self.get_table(table_name).to_dict()
 
     def get_schema(self, table_name: str) -> list[dict]:
         return self.get_table(table_name).to_legacy_rows()
@@ -103,15 +120,102 @@ class SchemaCatalog:
         """返回内存中的语义元数据（只读访问器）。"""
         return self._semantic
 
-    def search(self, keyword: str) -> list[semantic.SemanticHit]:
-        """轻量语义检索：委托 semantic.search_schema 在内存目录上匹配。"""
-        return semantic.search_schema(self._semantic, keyword)
+    def search(self, keyword: str, scan_all: bool = False) -> list[semantic.SemanticHit]:
+        """轻量语义检索，覆盖语义元数据 + Schema Cache 物理对象。
+
+        除 YAML 声明对象外，还按物理表名/列名兜底匹配。表列表/表结构来自
+        Catalog 缓存；注意冷缓存或 TTL 过期时，物理名命中会触发一次表结构
+        懒加载（数据库查询）。
+        scan_all=True 时对全库每张表都懒加载并扫描物理列名，保证未缓存且表名
+        未命中的物理列也能被检索到（代价：可能对每张表发一次结构查询）。
+        """
+        self._maybe_reload_semantics()
+        hits = semantic.search_schema(self._semantic, keyword)
+        needle = semantic.normalize(keyword)
+        if not needle:
+            return hits
+
+        # table_hit_tables 只用于「去重表级命中」，不用于决定是否扫描物理列；
+        # covered_cols 统一去重所有来源（语义 + 物理）的列级命中。
+        table_hit_tables = {h.table for h in hits if h.column is None}
+        covered_cols = {(h.table, h.column) for h in hits if h.column}
+
+        for table in self.list_tables():
+            if needle in semantic.normalize(table):
+                # 表名命中：补表级命中（去重），并扫描该表物理列
+                if table not in table_hit_tables:
+                    hits.append(
+                        semantic.SemanticHit(
+                            table=table, column=None, kind="table",
+                            matched_on=table, label="", description="",
+                        )
+                    )
+                    table_hit_tables.add(table)
+                for col in self.get_table(table).columns:
+                    if needle in semantic.normalize(col.name) and (table, col.name) not in covered_cols:
+                        covered_cols.add((table, col.name))
+                        hits.append(
+                            semantic.SemanticHit(
+                                table=table, column=col.name, kind="column",
+                                matched_on=col.name, label=col.label, description=col.description,
+                            )
+                        )
+            elif scan_all:
+                # 未命中表名：幂等地对每张表懒加载扫描物理列名（去重于 covered_cols），
+                # 即使该表已因语义命中进入 table_hit_tables 也照常扫描其列。
+                for col in self.get_table(table).columns:
+                    if needle in semantic.normalize(col.name) and (table, col.name) not in covered_cols:
+                        covered_cols.add((table, col.name))
+                        hits.append(
+                            semantic.SemanticHit(
+                                table=table, column=col.name, kind="column",
+                                matched_on=col.name, label=col.label, description=col.description,
+                            )
+                        )
+
+        # 对已缓存表（不额外 DB）按物理列名兜底
+        for tname, (_, schema) in list(self._cache.items()):
+            for col in schema.columns:
+                if needle in semantic.normalize(col.name) and (tname, col.name) not in covered_cols:
+                    hits.append(
+                        semantic.SemanticHit(
+                            table=tname, column=col.name, kind="column",
+                            matched_on=col.name, label=col.label, description=col.description,
+                        )
+                    )
+                    covered_cols.add((tname, col.name))
+        return hits
+
+    def reload_semantics(self) -> None:
+        """重新加载语义 YAML 并清空表缓存（下次 get_table 用新语义重建）。"""
+        with self._lock:
+            self._semantic = semantic.load_semantics(self._semantic_path)
+            self._semantic_mtime = _mtime_ns(self._semantic_path)
+            self._cache.clear()
+            self._tables = None
+
+    def _maybe_reload_semantics(self) -> None:
+        """按 TTL 频率检查 YAML 文件 mtime，变更则自动重载语义并清空表缓存。
+
+        mtime 为 None（文件被删除）同样触发重载——load_semantics() 对缺失文件
+        返回空语义，因此删除配置文件会清空旧业务描述，而非继续沿用。
+        """
+        with self._lock:
+            now = time.monotonic()
+            if now - self._semantic_checked < self.ttl_seconds:
+                return
+            self._semantic_checked = now
+            mtime = _mtime_ns(self._semantic_path)
+            if mtime == self._semantic_mtime:
+                return
+        self.reload_semantics()
 
     def invalidate(self, table_name: str | None = None) -> None:
         with self._lock:
             if table_name is None:
                 self._cache.clear()
                 self._tables = None
+                self._semantic = semantic.load_semantics(self._semantic_path)
             else:
                 self._cache.pop(table_name, None)
                 self._tables = None

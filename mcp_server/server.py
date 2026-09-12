@@ -7,8 +7,8 @@
 策略管理工具按 policy:read/validate/publish 权限分别授权。
 
 另暴露 2 个只读资源（URI 寻址的静态数据，供应用预取/客户端挂载）：
-    - database://schema              全库所有表的字段结构
-    - database://table/{table_name}  指定表的字段结构（URI 模板资源）
+    - database://schema              全库所有表的完整结构 DTO
+    - database://table/{table_name}  指定表的完整结构 DTO（URI 模板资源）
 
 生产级防护见 mcp_server/security/：只读白名单、单语句、危险关键字、
 系统库封禁、行数上限、执行超时（策略集中在 configs/security.yaml）。
@@ -90,22 +90,19 @@ async def metrics_endpoint(request: Request) -> Response:
     "database://schema",
     name="全库表结构",
     mime_type="application/json",
-    description="一次读取业务库所有表的字段结构（表名 + 列名/类型/可空/主键/注释）",
+    description="一次读取业务库所有表的完整结构（表级元数据 + 外键/索引 + 列含业务描述与枚举）",
 )
 def full_schema() -> list[dict]:
-    return [
-        {"table": table, "columns": schema_tools.get_schema(table)}
-        for table in schema_tools.list_tables()
-    ]
+    return [schema_tools.get_schema(table) for table in schema_tools.list_tables()]
 
 
 @server.resource(
     "database://table/{table_name}",
     name="单表结构",
     mime_type="application/json",
-    description="按 URI 读取指定表的字段结构，如 database://table/company",
+    description="按 URI 读取指定表的完整结构（含业务描述/外键/索引/枚举），如 database://table/company",
 )
-def table_schema(table_name: str) -> list[dict]:
+def table_schema(table_name: str) -> dict:
     return schema_tools.get_schema(table_name)
 
 

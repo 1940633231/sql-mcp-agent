@@ -193,7 +193,7 @@ class TestSearchSchemaAcl:
 
         monkeypatch.setattr(schema_tools, "current_request_context", fake_current_request_context)
         monkeypatch.setattr(schema_tools, "_authorizer", AuthorizationService(_POLICY))
-        monkeypatch.setattr(schema_tools._catalog, "search", lambda kw: _make_hits())
+        monkeypatch.setattr(schema_tools._catalog, "search", lambda kw, scan_all=False: _make_hits())
 
         schema_tools.get_policy_manager  # noqa 触发真实 manager 提供上下文
         # 覆盖 manager.get_context（本测试直接用构造的 policy）
@@ -230,3 +230,226 @@ class TestSearchSchemaAcl:
         except PermissionError:
             return
         raise AssertionError("auditor 不应有 schema:read 权限，应抛出 PermissionError")
+
+
+# ---------- 防御性加载（Gap5）----------
+
+
+class TestDefensiveLoad:
+    def _write(self, path, content: str):
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_malformed_yaml_returns_empty(self, tmp_path):
+        path = self._write(tmp_path / "bad.yaml", "tables: [1, } not yaml")
+        meta = load_semantics(path)
+        assert meta.tables == {} and meta.columns == {}
+
+    def test_root_not_dict_returns_empty(self, tmp_path):
+        path = self._write(tmp_path / "list.yaml", "- a\n- b\n")
+        meta = load_semantics(path)
+        assert meta.tables == {} and meta.columns == {}
+
+    def test_wrong_field_types_are_coerced(self, tmp_path):
+        path = self._write(
+            tmp_path / "types.yaml",
+            "tables:\n  t:\n    label: 表\ncolumns:\n  t:\n    c:\n"
+            "      label: 列\n      synonyms: 你好\n"
+            "      enum_values:\n        - 1\n        - {value: x, label: X}\n",
+        )
+        meta = load_semantics(path)
+        assert meta.columns["t"]["c"].synonyms == ()  # 非 list 降级为空
+        assert meta.columns["t"]["c"].enum_values == ({"value": "x", "label": "X"},)  # 跳过非 dict
+
+    def test_enum_values_non_iterable(self, tmp_path):
+        path = self._write(
+            tmp_path / "enum.yaml",
+            "columns:\n  t:\n    c:\n      enum_values: 123\n",  # 标量 int，预判后不应迭代报错
+        )
+        meta = load_semantics(path)
+        assert meta.columns["t"]["c"].enum_values == ()
+
+    def test_invalid_utf8_returns_empty(self, tmp_path):
+        path = tmp_path / "bad_utf8.yaml"
+        path.write_bytes(b"tables: \xff\xfe bad utf8")
+        meta = load_semantics(path)
+        assert meta.tables == {} and meta.columns == {}
+
+
+# ---------- 语义热重载（Gap4）----------
+
+
+class TestSemanticReload:
+    def test_invalidate_reloads_yaml(self, monkeypatch, tmp_path):
+        from mcp_server import config as cfg
+
+        path = tmp_path / "schema.yaml"
+        path.write_text(yaml.safe_dump({"tables": {"company": {"label": "旧名"}}}, allow_unicode=True), encoding="utf-8")
+        monkeypatch.setattr(cfg, "SCHEMA_DESC_PATH", str(path))
+
+        catalog = SchemaCatalog(ttl_seconds=60)
+        assert catalog.semantic_metadata().tables["company"].label == "旧名"
+
+        path.write_text(yaml.safe_dump({"tables": {"company": {"label": "新名"}}}, allow_unicode=True), encoding="utf-8")
+        catalog.invalidate()
+        assert catalog.semantic_metadata().tables["company"].label == "新名"
+
+    def test_auto_reload_on_file_change(self, monkeypatch, tmp_path):
+        from mcp_server import config as cfg
+
+        path = tmp_path / "schema.yaml"
+        path.write_text(yaml.safe_dump({"tables": {"company": {"label": "A"}}}, allow_unicode=True), encoding="utf-8")
+        monkeypatch.setattr(cfg, "SCHEMA_DESC_PATH", str(path))
+
+        catalog = SchemaCatalog(ttl_seconds=60)
+        assert catalog.semantic_metadata().tables["company"].label == "A"
+
+        # 外部改文件后，下一次查询/检索触发的 mtime 检查会自动重载
+        path.write_text(yaml.safe_dump({"tables": {"company": {"label": "B"}}}, allow_unicode=True), encoding="utf-8")
+        catalog._semantic_checked = 0  # 确保允许本次 mtime 检查
+        catalog._maybe_reload_semantics()
+        assert catalog.semantic_metadata().tables["company"].label == "B"
+
+    def test_deleting_file_clears_semantics(self, monkeypatch, tmp_path):
+        from mcp_server import config as cfg
+
+        path = tmp_path / "schema.yaml"
+        path.write_text(yaml.safe_dump({"tables": {"company": {"label": "A"}}}, allow_unicode=True), encoding="utf-8")
+        monkeypatch.setattr(cfg, "SCHEMA_DESC_PATH", str(path))
+
+        catalog = SchemaCatalog(ttl_seconds=60)
+        assert catalog.semantic_metadata().tables["company"].label == "A"
+
+        path.unlink()
+        catalog._semantic_checked = 0
+        catalog._maybe_reload_semantics()
+        # 文件被删后按 load_semantics 的缺失语义返回空，而非沿用旧配置
+        assert catalog.semantic_metadata().tables == {}
+
+
+# ---------- 检索覆盖物理对象（Gap6）----------
+
+
+class TestSearchPhysicalCoverage:
+    def test_unconfigured_table_name_is_found(self, monkeypatch):
+        # 没有会话语义的物理表：仅通过表名命中；get_table 只用于扫列名，mock 掉避免触库
+        catalog = SchemaCatalog(ttl_seconds=60)
+        monkeypatch.setattr(catalog, "_semantic", SemanticMetadata())
+
+        def fake_tables():
+            return ["company", "sale_records", "orders"]
+
+        monkeypatch.setattr(catalog, "list_tables", fake_tables)
+        monkeypatch.setattr(
+            catalog, "get_table",
+            lambda name: TableSchema(table=name, columns=()),
+        )
+        hits = catalog.search("orders")
+        names = {(h.table, h.kind) for h in hits}
+        assert ("orders", "table") in names
+
+    def test_scan_all_finds_uncached_unmatched_column(self, monkeypatch):
+        # 未缓存且表名未命中的物理列：只有 scan_all=True 才会被扫描到
+        catalog = SchemaCatalog(ttl_seconds=60)
+        monkeypatch.setattr(catalog, "_semantic", SemanticMetadata())
+        monkeypatch.setattr(catalog, "_semantic_checked", 0)  # 让 TTL 检查放行
+        monkeypatch.setattr(
+            catalog, "list_tables", lambda: ["company", "orders"],
+        )
+        orders = TableSchema(
+            table="orders",
+            columns=(ColumnSchema(name="order_ts", label="下单时间"),),
+        )
+        monkeypatch.setattr(catalog, "get_table", lambda name: orders if name == "orders" else TableSchema(table=name, columns=()))
+
+        # 默认不 scan_all：表名未命中、该表未缓存，物理列不被扫描
+        assert catalog.search("order_ts") == []
+        # scan_all=True：懒加载 orders 并扫到物理列名 order_ts
+        assert any(h.column == "order_ts" for h in catalog.search("order_ts", scan_all=True))
+
+    def test_scan_all_still_scans_columns_of_semantic_hit_table(self, monkeypatch):
+        # 表因 label 命中语义（covered table 并非来自物理名），scan_all 仍须扫描其物理列
+        catalog = SchemaCatalog(ttl_seconds=60)
+        monkeypatch.setattr(
+            catalog, "_semantic",
+            SemanticMetadata(tables={"sales": TableDesc(label="purchase")}),
+        )
+        monkeypatch.setattr(catalog, "_semantic_checked", 0)
+        monkeypatch.setattr(catalog, "list_tables", lambda: ["sales"])
+        sales = TableSchema(
+            table="sales",
+            columns=(ColumnSchema(name="purchase_id"),),
+        )
+        monkeypatch.setattr(catalog, "get_table", lambda name: sales)
+
+        default = catalog.search("purchase")
+        assert ("sales", None) in {(h.table, h.column) for h in default}  # 表级语义命中
+        assert all(h.column != "purchase_id" for h in default)  # 但默认不扫其列
+
+        deep = catalog.search("purchase", scan_all=True)
+        assert any(h.column == "purchase_id" for h in deep)  # scan_all 仍扫描该表列
+
+
+# ---------- DTO 输出（Gap1/2）----------
+
+
+class TestDto:
+    def test_table_dict_carries_all_metadata(self):
+        col = ColumnSchema(
+            name="amount", data_type="decimal", nullable=False,
+            label="金额", description="销售额", synonyms=("销售额",),
+            enum_values=({"value": "1", "label": "电子"},),
+        )
+        table = TableSchema(
+            table="sale_records", columns=(col,),
+            primary_keys=("id",),
+            foreign_keys=({"COLUMN_NAME": "company_id", "REFERENCED_TABLE_NAME": "company"},),
+            indexes=({"name": "idx_company_date", "column": "company_id", "unique": False},),
+            label="销售记录", description="每笔销售流水",
+        )
+        dto = table.to_dict()
+        assert dto["table"] == "sale_records"
+        assert dto["label"] == "销售记录" and dto["description"] == "每笔销售流水"
+        assert dto["primary_keys"] == ["id"]
+        assert dto["foreign_keys"][0]["COLUMN_NAME"] == "company_id"
+        assert "column" in dto["indexes"][0]
+        col_dto = dto["columns"][0]
+        assert col_dto["name"] == "amount"
+        assert col_dto["enum_values"] == [{"value": "1", "label": "电子"}]
+        assert col_dto["synonyms"] == ["销售额"]
+
+    def test_catalog_get_table_dict(self, monkeypatch, tmp_path):
+        from mcp_server.catalog.service import SchemaCatalog as SC
+        from mcp_server import config as cfg
+
+        # 空的语义文件，避免依赖真实 configs/schema_desc.yaml
+        path = tmp_path / "schema.yaml"
+        path.write_text(yaml.safe_dump({"tables": {}}, allow_unicode=True), encoding="utf-8")
+        monkeypatch.setattr(cfg, "SCHEMA_DESC_PATH", str(path))
+
+        class FakeCursor:
+            def execute(self, sql, params=None):
+                if sql.startswith("SHOW FULL COLUMNS"):
+                    self._rows = [
+                        {"Field": "company_id", "Type": "int", "Null": "NO", "Key": "PRI", "Default": None, "Comment": ""},
+                        {"Field": "name", "Type": "varchar(100)", "Null": "NO", "Key": "", "Default": None, "Comment": ""},
+                    ]
+                elif sql.startswith("SHOW INDEX"):
+                    self._rows = [{"Key_name": "PRIMARY", "Column_name": "company_id", "Non_unique": 0, "Seq_in_index": 1}]
+                else:
+                    self._rows = []
+                return None
+
+            def fetchall(self):
+                return list(self._rows)
+
+        @contextlib.contextmanager
+        def fake_db_cursor():
+            yield FakeCursor()
+
+        monkeypatch.setattr("mcp_server.catalog.service.db_cursor", fake_db_cursor)
+        catalog = SC(ttl_seconds=60)
+        dto = catalog.get_table_dict("company")
+        assert dto["table"] == "company"
+        assert {c["name"] for c in dto["columns"]} == {"company_id", "name"}
+        assert "enum_values" in dto["columns"][1]

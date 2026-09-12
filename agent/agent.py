@@ -20,6 +20,36 @@ from . import config
 from .client import extract_result, mcp_session, to_openai_tool
 
 
+def _format_table(t: dict) -> str:
+    """把单张表的完整 DTO（表描述 + 键 + 列）格式化为紧凑的提示文本。"""
+    header = "表 %s" % t["table"]
+    if t.get("label"):
+        header += "（%s）" % t["label"]
+    if t.get("description"):
+        header += ": %s" % t["description"]
+    parts = [header]
+    if t.get("primary_keys"):
+        parts.append("主键: " + ", ".join(t["primary_keys"]))
+    for fk in t.get("foreign_keys") or []:
+        parts.append(
+            "外键: %s -> %s.%s"
+            % (fk.get("COLUMN_NAME") or fk.get("column_name"),
+               fk.get("REFERENCED_TABLE_NAME") or fk.get("referenced_table_name"),
+               fk.get("REFERENCED_COLUMN_NAME") or fk.get("referenced_column_name"))
+        )
+    indexes = t.get("indexes") or []
+    if indexes:
+        idx_desc = ", ".join(
+            "%s(%s%s)" % (i.get("name") or i.get("Key_name") or "?",
+                          i.get("column") or i.get("Column_name") or "?",
+                          "" if i.get("unique") or i.get("Non_unique") in (0, "0") else ", 非唯一")
+            for i in indexes
+        )
+        parts.append("索引: " + idx_desc)
+    parts.append("列: %s" % json.dumps(t.get("columns") or [], ensure_ascii=False))
+    return "\n".join(parts)
+
+
 class SQLAgent:
     """基于 MCP 工具 + LLM function calling 的 SQL 查询 Agent。"""
 
@@ -42,7 +72,8 @@ class SQLAgent:
             "你是一个只读 SQL 数据分析助手，通过调用 MCP 工具查询 MySQL 数据库。\n\n"
             "可用工具：\n"
             "  - list_tables       列举所有数据表\n"
-            "  - get_schema(tbl)   查看某表字段结构\n"
+            "  - get_schema(tbl)   查看某表完整结构（含业务描述/外键/索引/枚举）\n"
+            "  - search_schema(kw)  按业务名/别名/同义词检索表、字段的语义含义\n"
             "  - run_query(sql)    执行只读 SELECT 查询（数据库会强制只读、单语句、限行）\n\n"
             "当前业务库中的数据表：\n"
             f"{tables_desc}\n\n"
@@ -50,9 +81,11 @@ class SQLAgent:
             f"{schema_desc}\n\n"
             "规则：\n"
             "1. 回答用户问题时，先判断需要哪些数据，必要时先 list_tables / get_schema 了解结构。\n"
-            "2. 用 run_query 编写 SQL，只做只读聚合查询；不要编造数据，结果以真实查询为准。\n"
-            "3. '今年'/'今年内' 等相对时间词，按当前年度 2026 处理（数据含 2023~2026）。\n"
-            "4. 得到结果后，用自然语言组织成清晰答案给用户。\n"
+            "2. 写 SQL 前，先用 search_schema 确认表/列的业务含义与别名，避免编造或拼错列名；\n"
+            "   再从 get_schema 拿完整结构确认可用的表/列名。\n"
+            "3. 用 run_query 编写 SQL，只做只读聚合查询；不要编造数据，结果以真实查询为准。\n"
+            "4. '今年'/'今年内' 等相对时间词，按当前年度 2026 处理（数据含 2023~2026）。\n"
+            "5. 得到结果后，用自然语言组织成清晰答案给用户。\n"
         )
 
     async def _gather_context(self, session) -> tuple[str, str, list[dict]]:
@@ -68,8 +101,7 @@ class SQLAgent:
         schema_data = json.loads(res.contents[0].text)
         tables_desc = json.dumps([t["table"] for t in schema_data], ensure_ascii=False)
         schema_desc = "\n".join(
-            f"表 {t['table']}: {json.dumps(t['columns'], ensure_ascii=False)}"
-            for t in schema_data
+            _format_table(t) for t in schema_data
         )
         return tables_desc, schema_desc, openai_schemas
 

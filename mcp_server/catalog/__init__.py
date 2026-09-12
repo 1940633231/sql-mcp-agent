@@ -6,6 +6,7 @@ from .semantic import (
     SemanticMetadata,
     TableDesc,
     load_semantics,
+    normalize,
     search_schema,
 )
 from .service import CatalogStats, SchemaCatalog
@@ -20,5 +21,6 @@ __all__ = [
     "TableDesc",
     "TableSchema",
     "load_semantics",
+    "normalize",
     "search_schema",
 ]

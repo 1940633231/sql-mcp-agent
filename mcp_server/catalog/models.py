@@ -15,6 +15,19 @@ class ColumnSchema:
     synonyms: tuple[str, ...] = ()
     enum_values: tuple[dict, ...] = ()
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "type": self.data_type,
+            "nullable": self.nullable,
+            "default": self.default,
+            "comment": self.comment,
+            "label": self.label,
+            "description": self.description,
+            "synonyms": list(self.synonyms),
+            "enum_values": [dict(v) for v in self.enum_values],
+        }
+
 
 @dataclass(frozen=True)
 class TableSchema:
@@ -26,6 +39,17 @@ class TableSchema:
     # V0.4 Schema Intelligence：表级业务语义
     label: str = ""
     description: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "table": self.table,
+            "label": self.label,
+            "description": self.description,
+            "primary_keys": list(self.primary_keys),
+            "foreign_keys": [dict(fk) for fk in self.foreign_keys],
+            "indexes": [dict(i) for i in self.indexes],
+            "columns": [column.to_dict() for column in self.columns],
+        }
 
     def to_legacy_rows(self) -> list[dict]:
         return [

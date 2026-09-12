@@ -82,7 +82,7 @@ MCP 对外能力：
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
 | Tool | `list_tables` | 列出业务库所有表 |
-| Tool | `get_schema(table_name)` | 查看某张表的结构（列名/类型/可空/主键/业务描述） |
+| Tool | `get_schema(table_name)` | 查看某表完整结构 DTO（表级描述/主键/外键/索引 + 列含业务描述/枚举），按 ACL 裁剪可见列与被引用表/列 |
 | Tool | `search_schema(keyword)` | 按关键字检索表/列的业务语义（业务名/别名/同义词/描述） |
 | Tool | `run_query(sql)` | 执行只读 SQL（仅单条 SELECT），返回行数据 |
 | Tool | `get_policy_status()` | 查看 active 权限策略版本与来源 |
@@ -91,8 +91,8 @@ MCP 对外能力：
 | Tool | `publish_permission_policy(document, expected_version)` | 事务发布新策略版本（需 `policy:publish`） |
 | Tool | `list_permission_policy_versions(limit)` | 查看策略版本历史 |
 | Tool | `export_permission_policy()` | 导出当前策略 |
-| Resource | `database://schema` | 全库所有表结构（应用预取，省钱省轮次） |
-| Resource | `database://table/{table_name}` | 单表结构（URI 模板资源） |
+| Resource | `database://schema` | 全库各表完整结构 DTO（含表描述/键/外键/索引/枚举，应用预取，省钱省轮次） |
+| Resource | `database://table/{table_name}` | 单表完整结构 DTO（URI 模板资源） |
 
 ## 快速开始
 

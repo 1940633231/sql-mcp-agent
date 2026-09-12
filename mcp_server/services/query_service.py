@@ -13,12 +13,17 @@
     - Database 层（executor.py）只负责执行，不懂安全
 """
 import threading
+import time
 
 from ..auth.context import AuthenticationError, current_request_context
 from ..auth.models import RequestContext
 from ..authorization.service import AuthorizationService
 from ..authorization.audit import log_event
+from ..authorization.manager import get_policy_manager
+from ..catalog.service import SchemaCatalog
 from ..database.executor import QueryExecutor
+from ..observability.fingerprint import raw_sql_hash, sql_fingerprint
+from ..observability.metrics import metrics
 from ..security import parser
 from ..security.validator import SqlValidator
 
@@ -38,9 +43,11 @@ class QueryService:
         validator: SqlValidator | None = None,
         executor: QueryExecutor | None = None,
         authorizer: AuthorizationService | None = None,
+        catalog: SchemaCatalog | None = None,
     ):
         self.validator = validator or SqlValidator()
         self.executor = executor or QueryExecutor()
+        self.catalog = catalog or SchemaCatalog.shared()
         self.authorizer = authorizer or AuthorizationService()
         self._semaphore = threading.BoundedSemaphore(self.policy.max_concurrent_queries)
 
@@ -50,17 +57,21 @@ class QueryService:
 
     def run(self, sql: str, context: RequestContext | None = None) -> dict:
         """执行只读 SQL，返回可直接序列化的 dict（失败时含 error）。"""
+        started = time.monotonic()
+        policy_context = get_policy_manager().get_context()
         try:
             context = context or current_request_context(source="mcp")
         except AuthenticationError as e:
             return {"error": str(e), "code": "authentication_required"}
 
+        authorizer = self.authorizer.for_policy(policy_context.policy)
+
         result = self.validator.validate(sql)
         if not result.allowed:
             return {"error": result.reason, "code": result.code}
 
-        authorized = self.authorizer.authorize_sql(
-            result.normalized_sql, context, self.executor
+        authorized = authorizer.authorize_sql(
+            result.normalized_sql, context, self.catalog
         )
         if not authorized.allowed:
             return {"error": authorized.reason, "code": authorized.code}
@@ -88,6 +99,7 @@ class QueryService:
                 self._semaphore.release()
         except Exception as e:
             # Database 层抛出的 MySQLError 等统一收敛为错误结构，不向 Tool 层上抛
+            metrics.inc("query_executions_total", {"status": "error"})
             return {"error": str(e)}
         guard_error = _result_column_guard(query_result.columns, authorized.result_columns)
         if guard_error:
@@ -103,14 +115,30 @@ class QueryService:
         log_event(
             "query_executed",
             principal=context.principal.subject,
+            request_id=context.request_id,
+            trace_id=context.trace_id,
+            session_id=context.session_id,
+            client_id=context.client_id,
+            tool_name=context.tool_name,
+            auth_method=context.auth_method,
+            policy_version=policy_context.version,
+            policy_hash=policy_context.policy_hash,
+            decision="allow",
+            sql_fingerprint=sql_fingerprint(sql),
+            raw_sql_hash=raw_sql_hash(sql),
+            duration_ms=round((time.monotonic() - started) * 1000, 3),
             roles=sorted(context.principal.roles),
             tables=list(authorized.tables),
             policies=list(authorized.policy_ids),
             columns=query_result.columns,
             row_count=query_result.row_count,
+            rows=query_result.row_count,
             truncated=query_result.truncated,
             elapsed_seconds=query_result.elapsed_seconds,
+            result_bytes=query_result.result_bytes,
         )
+        metrics.inc("query_executions_total", {"status": "ok"})
+        metrics.observe("query_duration_seconds", time.monotonic() - started)
         return query_result.to_dict()
 
     def _ensure_limit(self, sql: str, enforce: bool, max_rows: int) -> str:
@@ -124,7 +152,7 @@ class QueryService:
 
 
 def _result_column_guard(actual_columns: list[str], allowed_columns: tuple[str, ...]) -> str | None:
-    """Defense-in-depth check after the database returns a result set."""
+    """数据库返回结果集后的纵深防御检查。"""
     if not allowed_columns:
         return None
     allowed = {_normalize_result_name(column) for column in allowed_columns}

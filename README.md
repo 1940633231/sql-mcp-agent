@@ -189,6 +189,8 @@ mcp_server/             Server 侧
   services/
     query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
   auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
+  catalog/               SchemaCatalog：表/列/键/索引缓存
+  observability/         Trace ID / Audit sink / Metrics / Health / Lifecycle
   authorization/         授权：RBAC / ACL / 列可见性 / RLS / SQL 策略改写 / 审计
                         + Schema/Semantic/Security Validator / Policy DB / 事务发布
                         + 策略版本存储与热加载 / CTE 列血缘 / JSON 审计
@@ -253,7 +255,10 @@ $env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   
 - **凭证隔离**：连接串、Key 全部走 `.env`，代码零硬编码；`.env` 已被 `.gitignore` 拦截
 - **版本注意**：本项目用 mcp **2.x** 的 `MCPServer`（v1 的 `FastMCP` 已改名，勿用旧教程 API）
 - **策略生命周期**：MySQL 版本表保存 document，active 指针原子切换；查询前按 TTL 检查并支持手动强制重载
-- **审计**：授权决策和查询结果使用 JSON 结构化日志，记录 principal、roles、表、策略、结果列、行数、耗时和 SQL 指纹
+- **连接池与 SchemaCatalog**：Business/Policy 独立连接池，SchemaCatalog 提供 TTL 缓存和表/列/主键/外键/索引接口
+- **审计**：默认 JSON 日志，可通过 `AUDIT_STORE=mysql` 写入策略库；包含 policy_version、trace_id、request_id、SQL fingerprint、耗时和结果统计
+- **运行态接口**：`/healthz`、`/readyz`、`/metrics`，支持容器探针和 Prometheus 采集
+- **优雅退出**：停止接收新请求、等待在途请求排空、关闭连接池后退出
 
 ## 已知边界
 

@@ -1,4 +1,4 @@
-"""Migrate policy versions from the legacy business DB to the policy DB."""
+"""把历史策略版本从业务库迁移到独立策略库。"""
 import sys
 from pathlib import Path
 import json

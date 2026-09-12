@@ -1,4 +1,4 @@
-"""Authorization layer: RBAC, ACL, column visibility and row-level policies."""
+"""授权层：RBAC、ACL、列可见性和行级策略。"""
 from .models import AuthorizationResult, PermissionPolicy
 from .manager import PolicyConflictError, get_permission_policy, get_policy_manager
 from .policy import load_permission_policy

@@ -1,5 +1,5 @@
-"""Authentication primitives for MCP requests.
+"""MCP 请求认证基础模块。
 
-Authentication establishes a Principal. Authorization decisions are handled by
-``mcp_server.authorization`` and never trust roles supplied in tool arguments.
+认证负责建立 Principal；授权由 ``mcp_server.authorization`` 处理，
+不信任工具参数中传入的角色。
 """

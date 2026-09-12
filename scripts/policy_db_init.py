@@ -1,4 +1,4 @@
-"""Initialize the dedicated permission-policy database and tables."""
+"""初始化权限策略专用数据库和数据表。"""
 import sys
 from pathlib import Path
 

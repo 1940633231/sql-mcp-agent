@@ -1,4 +1,4 @@
-"""Authorization policy and decision models."""
+"""授权策略与决策模型。"""
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping

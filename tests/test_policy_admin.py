@@ -1,4 +1,4 @@
-"""Tests for policy administration tools."""
+"""策略管理工具测试。"""
 import pytest
 
 from mcp_server.auth.models import Principal, RequestContext

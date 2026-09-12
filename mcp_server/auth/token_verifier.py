@@ -1,7 +1,6 @@
-"""Small static bearer-token verifier for development and local deployments.
+"""用于开发和本地部署的轻量静态 Bearer Token 校验器。
 
-Production deployments should replace this with an external OAuth 2.1 / JWT
-TokenVerifier. The MCP server still enforces scopes and resource audience.
+生产环境应替换为外部 OAuth 2.1 / JWT TokenVerifier；MCP 服务仍校验 scope 与资源受众。
 """
 import hmac
 
@@ -15,7 +14,7 @@ from ..authorization.manager import get_permission_policy
 
 
 class StaticTokenVerifier:
-    """Verify tokens from ``AUTH_TOKENS_JSON`` and map them to principals."""
+    """校验 ``AUTH_TOKENS_JSON`` 中的 Token，并映射为 principal。"""
 
     def __init__(self, tokens: dict[str, str] | None = None):
         self._tokens = dict(tokens or config.AUTH_TOKENS)
@@ -45,10 +44,10 @@ class StaticTokenVerifier:
 
 
 class JwtTokenVerifier:
-    """OAuth 2.1 / JWT resource-server token verifier.
+    """OAuth 2.1 / JWT 资源服务器 Token 校验器。
 
-    Supports JWKS, static PEM public keys, and HS256 secrets. Signature, issuer,
-    audience and expiry are all validated before an AccessToken is returned.
+    支持 JWKS、静态 PEM 公钥和 HS256 密钥，并在返回 AccessToken 前校验签名、
+    issuer、audience 和过期时间。
     """
 
     def __init__(self):
@@ -111,7 +110,7 @@ def _claim_list(value) -> list[str]:
 
 
 def build_auth_settings() -> tuple[AuthSettings | None, TokenVerifier | None]:
-    """Build MCP auth settings for static or external JWT mode."""
+    """为静态 Token 或外部 JWT 模式构建 MCP 认证配置。"""
     mode = config.AUTH_MODE
     if mode == "disabled":
         return None, None

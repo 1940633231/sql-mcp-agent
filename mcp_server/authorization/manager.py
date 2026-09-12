@@ -1,4 +1,4 @@
-"""Permission-policy persistence, versioning, and hot reload."""
+"""权限策略持久化、版本管理与热加载。"""
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +26,7 @@ from .policy import (
 
 
 class PolicyConflictError(RuntimeError):
-    """The active policy changed since the publisher loaded it."""
+    """发布者读取策略后，active 版本已被其他请求修改。"""
 
 
 
@@ -37,6 +37,15 @@ class PolicyRecord:
     source: str
     actor: str = ""
     reason: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class PolicyContext:
+    policy: PermissionPolicy
+    version: str
+    policy_hash: str
+    source: str
     updated_at: str = ""
 
 
@@ -51,7 +60,7 @@ class PolicyStore(Protocol):
 
 
 class FilePolicyStore:
-    """Read and atomically replace the YAML policy file."""
+    """读取并原子替换 YAML 策略文件。"""
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else DEFAULT_POLICY_PATH
@@ -94,7 +103,7 @@ class FilePolicyStore:
 
 
 class MemoryPolicyStore:
-    """In-memory store used by tests and embedded deployments."""
+    """用于测试和嵌入式部署的内存策略存储。"""
 
     def __init__(self, document: dict | None = None):
         self._records: list[PolicyRecord] = []
@@ -125,7 +134,7 @@ class MemoryPolicyStore:
 
 
 class MySqlPolicyStore:
-    """Versioned policy storage in MySQL."""
+    """基于 MySQL 的版本化策略存储。"""
 
     def __init__(self):
         self._schema_ready = False
@@ -273,7 +282,7 @@ class MySqlPolicyStore:
 
 
 class PolicyManager:
-    """Cache the active policy and refresh it from its backing store."""
+    """缓存 active 策略，并按间隔从后端存储刷新。"""
 
     def __init__(self, store: PolicyStore | None = None, reload_seconds: int | None = None):
         self._store = store or _build_store()
@@ -328,6 +337,18 @@ class PolicyManager:
             raise RuntimeError("权限策略重载失败")
         return self._cached
 
+    def get_context(self, force: bool = False) -> PolicyContext:
+        self.get(force=force)
+        if self._cached is None or self._cached_policy is None:
+            raise RuntimeError("权限策略尚未加载")
+        return PolicyContext(
+            policy=self._cached_policy,
+            version=self._cached.version,
+            policy_hash=_policy_hash(self._cached.document),
+            source=self._cached.source,
+            updated_at=self._cached.updated_at,
+        )
+
     def status(self) -> dict:
         self.get(force=True)
         if self._cached is None:
@@ -371,6 +392,11 @@ def _assert_expected(active: PolicyRecord | None, expected_version: str | None) 
         raise PolicyConflictError(
             "active policy changed: expected %s, got %s" % (expected_version, current)
         )
+
+
+def _policy_hash(document: dict) -> str:
+    payload = json.dumps(document, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _document_version(document: dict, mtime: int | None = None) -> str:

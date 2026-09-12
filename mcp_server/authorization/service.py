@@ -1,4 +1,4 @@
-"""Authorization decision point and SQL policy rewriter."""
+"""授权决策点与 SQL 策略改写器。"""
 import hashlib
 from typing import Protocol
 
@@ -6,6 +6,8 @@ from sqlglot import exp, parse_one
 from sqlglot.errors import ParseError
 
 from ..auth.models import Principal, RequestContext, resolve_attribute
+from ..observability.fingerprint import raw_sql_hash, sql_fingerprint
+from ..observability.metrics import metrics
 from ..security import parser
 from .audit import log_event
 from .lineage import LineageResolver
@@ -14,7 +16,7 @@ from .models import AclRule, AuthorizationResult, PermissionPolicy, RowPolicy
 
 
 class ColumnPermissionDenied(PermissionError):
-    """A column-level authorization check failed after lineage resolution."""
+    """完成列血缘解析后，列级授权检查失败。"""
 
 
 class SchemaCatalog(Protocol):
@@ -22,7 +24,7 @@ class SchemaCatalog(Protocol):
 
 
 class AuthorizationService:
-    """Evaluate RBAC/ACL policies and rewrite SQL for RLS and ``*`` visibility."""
+    """执行 RBAC/ACL 判定，并为 RLS 和 ``*`` 列可见性改写 SQL。"""
 
     def __init__(self, policy: PermissionPolicy | None = None):
         if policy is None:
@@ -30,6 +32,11 @@ class AuthorizationService:
 
             policy = get_permission_policy()
         self.policy = policy
+
+    def for_policy(self, policy: PermissionPolicy) -> "AuthorizationService":
+        if policy is self.policy:
+            return self
+        return AuthorizationService(policy)
 
     def has_permission(self, principal: Principal, permission: str) -> bool:
         permissions = self.policy.permissions_for_roles(principal.roles)
@@ -111,6 +118,8 @@ class AuthorizationService:
                 return result
 
         for table, column in parser.extract_column_refs(sql):
+            if table.lower() in _derived_aliases(tree):
+                continue
             if not self.authorize_column(context.principal, table, column):
                 result = AuthorizationResult.reject(
                     "无权访问列：%s.%s" % (table, column),
@@ -250,10 +259,10 @@ class AuthorizationService:
     def _apply_row_policies(self, tree, principal: Principal) -> list[str]:
         applied: list[str] = []
         bypass = self.policy.bypass_rls_for(principal)
-        for table_node in tree.find_all(exp.Table):
+        cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+        for table_node in list(tree.find_all(exp.Table)):
             table = _bare(table_node.name)
-            select = table_node.find_ancestor(exp.Select)
-            if select is None:
+            if table_node.name.lower() in cte_names:
                 continue
             protected = any(
                 policy.applies_to_resource(table, "select")
@@ -267,10 +276,24 @@ class AuthorizationService:
                 raise PermissionError("表 %s 没有适用的行级策略" % table)
             if bypass:
                 continue
-            for policy in applicable:
-                predicate = self._row_predicate(policy, principal, table_node.alias_or_name)
-                select.where(predicate, copy=False)
-                applied.append(policy.name)
+            predicates = [
+                self._row_predicate(policy, principal, table_node.alias_or_name)
+                for policy in applicable
+            ]
+            if not predicates:
+                continue
+            filtered = exp.select("*").from_(table_node.copy())
+            filtered.where(
+                predicates[0] if len(predicates) == 1 else exp.and_(*predicates),
+                copy=False,
+            )
+            table_node.replace(
+                exp.Subquery(
+                    this=filtered,
+                    alias=exp.TableAlias(this=exp.to_identifier(table_node.alias_or_name)),
+                )
+            )
+            applied.extend(policy.name for policy in applicable)
         return applied
 
     def _row_predicate(self, policy: RowPolicy, principal: Principal, qualifier: str):
@@ -302,6 +325,10 @@ class AuthorizationService:
 
     @staticmethod
     def _audit(context: RequestContext, sql: str, result: AuthorizationResult) -> None:
+        metrics.inc(
+            "authz_decisions_total",
+            {"decision": "allow" if result.allowed else "deny", "code": result.code or "ok"},
+        )
         log_event(
             "authorization_decision",
             decision="allow" if result.allowed else "deny",
@@ -310,8 +337,16 @@ class AuthorizationService:
             auth_method=context.auth_method,
             source=context.source,
             request_id=context.request_id,
+            trace_id=context.trace_id,
+            session_id=context.session_id,
+            client_id=context.client_id,
+            tool_name=context.tool_name,
             tables=list(result.tables),
             policies=list(result.policy_ids),
+            policy_version=context.policy_version,
+            policy_hash=context.policy_hash,
+            sql_fingerprint=sql_fingerprint(sql),
+            raw_sql_hash=raw_sql_hash(sql),
             result_columns=list(result.result_columns),
             warnings=list(result.warnings),
             code=result.code,
@@ -320,8 +355,18 @@ class AuthorizationService:
         )
 
 
+def _derived_aliases(tree) -> set[str]:
+    aliases = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+    aliases.update(
+        subquery.alias_or_name.lower()
+        for subquery in tree.find_all(exp.Subquery)
+        if subquery.alias_or_name
+    )
+    return aliases
+
+
 def _star_target(projection: exp.Expression) -> str | None:
-    """Return ``""`` for ``*``, alias for ``t.*`` and ``None`` for a normal projection."""
+    """``*`` 返回空字符串，``t.*`` 返回别名，普通投影返回 ``None``。"""
     if isinstance(projection, exp.Star):
         return ""
     if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):

@@ -1,4 +1,4 @@
-"""Administrative MCP tools for permission-policy inspection and hot reload."""
+"""权限策略查看与热加载的 MCP 管理工具。"""
 import json
 
 from ..auth.context import current_request_context
@@ -17,13 +17,13 @@ def _require_permission(permission: str):
 
 
 def get_policy_status() -> dict:
-    """Return the active policy source, version, actor, and update time."""
+    """返回 active 策略的来源、版本、操作者和更新时间。"""
     _require_permission("policy:read")
     return _manager.status()
 
 
 def reload_permission_policy() -> dict:
-    """Force reload the active policy from its backing store."""
+    """从后端存储强制重新加载 active 策略。"""
     _require_permission("policy:read")
     record = _manager.reload()
     return {
@@ -34,7 +34,7 @@ def reload_permission_policy() -> dict:
 
 
 def list_permission_policy_versions(limit: int = 20) -> list[dict]:
-    """List recent policy versions from MySQL or the active file."""
+    """列出 MySQL 或当前文件中的最近策略版本。"""
     _require_permission("policy:read")
     return [
         {
@@ -49,7 +49,7 @@ def list_permission_policy_versions(limit: int = 20) -> list[dict]:
 
 
 def export_permission_policy() -> dict:
-    """Export the active normalized policy document."""
+    """导出当前规范化策略文档。"""
     _require_permission("policy:read")
     return permission_policy_to_dict(_manager.get())
 
@@ -57,7 +57,7 @@ def export_permission_policy() -> dict:
 def publish_permission_policy(
     document: dict, reason: str = "", expected_version: str | None = None
 ) -> dict:
-    """Validate and publish a new policy version, then hot-reload it."""
+    """校验并发布新策略版本，随后立即热加载。"""
     context = _require_permission("policy:publish")
     payload_size = len(json.dumps(document, ensure_ascii=False).encode("utf-8"))
     if payload_size > 512 * 1024:
@@ -82,7 +82,7 @@ def publish_permission_policy(
 
 
 def validate_permission_policy(document: dict) -> dict:
-    """Validate a policy document without publishing it."""
+    """仅校验策略文档，不执行发布。"""
     _require_permission("policy:validate")
     return validate_policy_document(document).to_dict()
 

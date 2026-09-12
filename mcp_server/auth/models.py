@@ -1,4 +1,4 @@
-"""Identity models shared by authentication and authorization."""
+"""认证与授权共用的身份模型。"""
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -9,10 +9,9 @@ _ATTRIBUTE_PREFIX = "principal.attributes."
 
 @dataclass(frozen=True)
 class Principal:
-    """Authenticated caller identity.
+    """已认证的调用者身份。
 
-    Roles and attributes are resolved from server-side policy, not from tool
-    arguments or model-generated content.
+    角色与属性只来自服务端策略，不信任工具参数或模型生成内容。
     """
 
     subject: str
@@ -24,7 +23,7 @@ class Principal:
 
 
 def resolve_attribute(principal: Principal, expression: str):
-    """Resolve a whitelisted ``principal.attributes.*`` policy expression."""
+    """解析白名单形式的 ``principal.attributes.*`` 策略表达式。"""
     if expression.startswith(_ATTRIBUTE_PREFIX):
         key = expression[len(_ATTRIBUTE_PREFIX):]
     elif expression.startswith("principal."):
@@ -42,9 +41,16 @@ def resolve_attribute(principal: Principal, expression: str):
 
 @dataclass(frozen=True)
 class RequestContext:
-    """Immutable per-request authorization context."""
+    """请求级不可变授权上下文。"""
 
     principal: Principal
     request_id: str = ""
+    trace_id: str = ""
+    session_id: str = ""
+    client_id: str = ""
+    tool_name: str = ""
     source: str = "local"
     auth_method: str = "local"
+    policy_version: str = ""
+    policy_hash: str = ""
+    policy_source: str = ""

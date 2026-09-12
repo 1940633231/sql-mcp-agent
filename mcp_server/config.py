@@ -95,11 +95,22 @@ POLICY_DB_PASSWORD = os.getenv("POLICY_DB_PASSWORD", "")
 POLICY_DB_DATABASE = os.getenv("POLICY_DB_DATABASE", "")
 POLICY_DB_CHARSET = os.getenv("POLICY_DB_CHARSET", "utf8mb4")
 POLICY_DB_CONNECT_TIMEOUT = int(os.getenv("POLICY_DB_CONNECT_TIMEOUT", "10"))
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+DB_POOL_TIMEOUT_SECONDS = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "5"))
+DB_POOL_MAX_USAGE = int(os.getenv("DB_POOL_MAX_USAGE", "0"))
+POLICY_DB_POOL_SIZE = int(os.getenv("POLICY_DB_POOL_SIZE", "2"))
+DB_POOL_PING = os.getenv("DB_POOL_PING", "true").strip().lower() in {"1", "true", "yes", "on"}
+SCHEMA_CACHE_TTL_SECONDS = int(os.getenv("SCHEMA_CACHE_TTL_SECONDS", "60"))
+SCHEMA_CACHE_MAX_ENTRIES = int(os.getenv("SCHEMA_CACHE_MAX_ENTRIES", "256"))
+AUDIT_STORE = os.getenv("AUDIT_STORE", "log").strip().lower()
+AUDIT_REQUIRED = os.getenv("AUDIT_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
+AUDIT_TABLE = "request_audit_events"
+SHUTDOWN_GRACE_SECONDS = float(os.getenv("SHUTDOWN_GRACE_SECONDS", "20"))
 POLICY_AUDIT_TABLE = "permission_policy_events"
 
 
 def get_policy_connection() -> dict:
-    """Return the dedicated policy database connection parameters."""
+    """返回策略库专用连接参数。"""
     if not POLICY_DB_DATABASE or not POLICY_DB_USER:
         raise ValueError(
             "POLICY_STORE=mysql 时必须配置独立的 POLICY_DB_DATABASE 与 POLICY_DB_USER"

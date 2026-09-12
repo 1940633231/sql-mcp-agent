@@ -114,7 +114,7 @@ class TestTableAndColumnAcl:
         assert result.allowed
         assert "employees" not in result.sql
         assert "company.company_id" in result.sql
-        assert "SELECT *" not in result.sql
+        assert result.sql.startswith("SELECT company.")
         assert "employees" not in result.result_columns
 
     def test_star_without_catalog_fails_closed(self, policy, authz):
@@ -246,7 +246,7 @@ class TestQueryServiceIntegration:
             validator=SqlValidator(),
             authorizer=AuthorizationService(policy),
         )
-        monkeypatch.setattr(service.executor, "get_schema", FakeCatalog().get_schema)
+        monkeypatch.setattr(service.catalog, "get_schema", FakeCatalog().get_schema)
         captured = {}
 
         def fake_run(sql, max_rows, timeout_seconds, max_result_bytes=None):
@@ -292,7 +292,7 @@ class TestResultGuard:
             validator=SqlValidator(),
             authorizer=AuthorizationService(policy),
         )
-        monkeypatch.setattr(service.executor, "get_schema", FakeCatalog().get_schema)
+        monkeypatch.setattr(service.catalog, "get_schema", FakeCatalog().get_schema)
 
         def fake_run(sql, max_rows, timeout_seconds, max_result_bytes=None):
             return QueryResult(
@@ -326,11 +326,11 @@ class TestSchemaVisibility:
             def get_schema(self, table_name):
                 return FakeCatalog().get_schema(table_name)
 
-        monkeypatch.setattr(schema_tools, "_executor", FakeExecutor())
+        monkeypatch.setattr(schema_tools, "_catalog", FakeExecutor())
         monkeypatch.setattr(
             schema_tools,
             "current_request_context",
-            lambda source="schema": context_for(policy, "alice"),
+            lambda source="schema", **kwargs: context_for(policy, "alice"),
         )
 
         assert schema_tools.list_tables() == ["company", "sale_records"]

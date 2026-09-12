@@ -1,4 +1,4 @@
-"""tests/test_policy_manager.py — policy persistence and hot reload tests."""
+"""tests/test_policy_manager.py — 策略持久化与热加载测试。"""
 import pytest
 
 from mcp_server.authorization.manager import MemoryPolicyStore, PolicyConflictError, PolicyManager

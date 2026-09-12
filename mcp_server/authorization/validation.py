@@ -1,4 +1,4 @@
-"""Schema, semantic, and security validation for permission policies."""
+"""权限策略的结构、语义和安全校验。"""
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any

@@ -1,6 +1,6 @@
-"""CLI for validating, publishing, and inspecting permission policies.
+"""用于校验、发布和查看权限策略的 CLI。
 
-Examples:
+示例：
     python -m mcp_server.policy_admin status
     python -m mcp_server.policy_admin validate configs/permissions.yaml
     python -m mcp_server.policy_admin publish configs/permissions.yaml --actor admin --reason "v0.3"

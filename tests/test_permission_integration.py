@@ -1,6 +1,6 @@
-"""Real-MySQL multi-principal permission integration tests.
+"""真实 MySQL 多主体权限集成测试。
 
-Run with:
+运行方式：
     $env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q
 """
 import os
@@ -14,6 +14,7 @@ from mcp_server import config
 from mcp_server.auth.models import Principal, RequestContext
 from mcp_server.authorization.policy import load_permission_policy, permission_policy_to_dict
 from mcp_server.authorization.manager import MySqlPolicyStore, PolicyManager
+from mcp_server.authorization import audit as audit_module
 from mcp_server.authorization.service import AuthorizationService
 from mcp_server.security.validator import SqlValidator
 from mcp_server.services.query_service import QueryService
@@ -130,6 +131,67 @@ def test_cte_and_derived_table_lineage_with_real_database():
         assert "error" not in result, result
         assert [row["company_id"] for row in result["rows"]] == [9001, 9002]
         assert "employees" not in result["columns"]
+
+
+def test_rls_join_returns_only_authorized_rows():
+    result = _service().run(
+        "SELECT c.company_id, c.name, s.amount FROM company c "
+        "JOIN sale_records s ON c.company_id = s.company_id "
+        "WHERE c.company_id BETWEEN 9001 AND 9006",
+        _context("alice"),
+    )
+    assert "error" not in result, result
+    assert {row["company_id"] for row in result["rows"]} == {9001, 9002}
+    assert result["row_count"] == 6
+
+
+def test_rls_aggregation_filters_before_sum():
+    result = _service().run(
+        "SELECT SUM(amount) AS total FROM sale_records",
+        _context("alice"),
+    )
+    assert "error" not in result, result
+    assert result["rows"][0]["total"] == 10200
+
+
+def test_rls_subquery_and_union_are_filtered():
+    service = _service()
+    subquery = service.run(
+        "SELECT x.company_id FROM (SELECT * FROM company) x "
+        "WHERE x.company_id BETWEEN 9001 AND 9006",
+        _context("alice"),
+    )
+    union = service.run(
+        "SELECT company_id FROM company UNION ALL SELECT company_id FROM company",
+        _context("alice"),
+    )
+    assert {row["company_id"] for row in subquery["rows"]} == {9001, 9002}
+    assert {row["company_id"] for row in union["rows"]} == {9001, 9002}
+
+
+def test_mysql_audit_sink_persists_policy_version(monkeypatch):
+    _configure_policy_db(monkeypatch)
+    monkeypatch.setattr(config, "AUDIT_STORE", "mysql")
+    monkeypatch.setattr(config, "AUDIT_REQUIRED", True)
+    monkeypatch.setattr(audit_module, "_audit_schema_ready", False)
+    audit_module.log_event(
+        "integration_audit",
+        request_id="req-1",
+        trace_id="trace-1",
+        principal="alice",
+        policy_version="policy-test",
+        sql_fingerprint="qfp_test",
+    )
+    from mcp_server.database.connection import policy_db_cursor
+    with policy_db_cursor() as cur:
+        cur.execute(
+            "SELECT request_id, policy_version, sql_fingerprint FROM `%s` "
+            "ORDER BY id DESC LIMIT 1" % config.AUDIT_TABLE
+        )
+        row = cur.fetchone()
+    assert row["request_id"] == "req-1"
+    assert row["policy_version"] == "policy-test"
+    assert row["sql_fingerprint"] == "qfp_test"
 
 
 def test_viewer_cannot_run_query():

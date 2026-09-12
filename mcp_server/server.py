@@ -18,11 +18,18 @@
     MCP_TRANSPORT=stdio python -m mcp_server.server   # stdio（子进程模式）
 """
 import logging
+from contextlib import asynccontextmanager
 
 from mcp.server.mcpserver import MCPServer
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from . import config
 from .auth.token_verifier import build_auth_settings
+from .database.connection import close_pools
+from .observability.health import health, metrics_payload, readiness
+from .observability.lifecycle import lifecycle
+from .observability.middleware import trace_middleware
 from .tools import policy_admin as policy_admin_tools
 from .tools import query as query_tools
 from .tools import schema as schema_tools
@@ -31,15 +38,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("sql_mcp")
 
 _auth_settings, _token_verifier = build_auth_settings()
+
+@asynccontextmanager
+async def lifespan(server):
+    lifecycle.set_ready()
+    logger.info("MCP server ready")
+    try:
+        yield
+    finally:
+        lifecycle.set_draining()
+        logger.info("MCP server draining in-flight requests")
+        await lifecycle.wait_for_drain(config.SHUTDOWN_GRACE_SECONDS)
+        close_pools()
+        lifecycle.set_stopped()
+        logger.info("MCP server stopped")
+
 server = MCPServer(
     name="mysql-sql-agent",
     auth=_auth_settings,
     token_verifier=_token_verifier,
+    middleware=[trace_middleware],
+    lifespan=lifespan,
 )
 
 schema_tools.register(server)
 policy_admin_tools.register(server)
 query_tools.register(server)
+
+
+@server.custom_route("/healthz", methods=["GET"], include_in_schema=False)
+async def healthz(request: Request) -> Response:
+    return JSONResponse(await health())
+
+
+@server.custom_route("/readyz", methods=["GET"], include_in_schema=False)
+async def readyz(request: Request) -> Response:
+    payload = await readiness()
+    return JSONResponse(payload, status_code=200 if payload["status"] == "ready" else 503)
+
+
+@server.custom_route("/metrics", methods=["GET"], include_in_schema=False)
+async def metrics_endpoint(request: Request) -> Response:
+    return Response(metrics_payload(), media_type="text/plain; version=0.0.4")
 
 
 # ---------- Resources：URI 寻址的只读数据 ----------

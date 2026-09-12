@@ -1,4 +1,4 @@
-"""Column lineage for SELECT, CTE, and derived-table authorization."""
+"""用于 SELECT、CTE 和派生表授权的列血缘追踪。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,7 +37,7 @@ class ScopeLineage:
 
 
 class LineageResolver:
-    """Resolve physical source columns behind each SELECT output."""
+    """解析每个 SELECT 输出列背后的真实物理来源列。"""
 
     def __init__(self, tree: exp.Expression, catalog: SchemaCatalog | None = None):
         self.tree = tree

@@ -1,4 +1,4 @@
-"""Load authorization policy from ``configs/permissions.yaml``."""
+"""从 ``configs/permissions.yaml`` 加载授权策略。"""
 from pathlib import Path
 from types import MappingProxyType
 
@@ -94,7 +94,7 @@ def permission_policy_from_dict(data: dict | None) -> PermissionPolicy:
 
 
 def permission_policy_to_dict(policy: PermissionPolicy) -> dict:
-    """Serialize a normalized policy for persistence and admin APIs."""
+    """把规范化策略序列化，供持久化和管理接口使用。"""
     return {
         "version": SCHEMA_VERSION,
         "default_principal": policy.default_principal,
@@ -152,11 +152,11 @@ def load_permission_policy(path: str | Path | None = None) -> PermissionPolicy:
 
 
 def permission_policy_from_dict(data: dict | None) -> PermissionPolicy:
-    """Compile a policy through schema, semantic, and security validation."""
+    """依次通过结构、语义和安全校验后编译策略。"""
     return compile_policy(data or {})
 
 
 def load_permission_policy(path: str | Path | None = None) -> PermissionPolicy:
-    """Load a file with duplicate-key detection and strict validation."""
+    """加载文件，检测重复键并执行严格校验。"""
     policy_path = Path(path) if path else DEFAULT_POLICY_PATH
     return compile_policy(load_policy_document(policy_path))

@@ -1,4 +1,4 @@
-"""Tests for dedicated policy database connection separation."""
+"""策略库连接隔离与事务测试。"""
 import pytest
 import contextlib
 
@@ -87,16 +87,26 @@ def test_mysql_publish_rejects_stale_expected_version(monkeypatch):
 
 def test_policy_transaction_commits_and_rolls_back(monkeypatch):
     connection_state = {"conn": FakeConnection()}
-    monkeypatch.setattr(connection, "policy_connect", lambda: connection_state["conn"])
+    from mcp_server.database.pool import ConnectionPool
+    monkeypatch.setattr(
+        connection,
+        "policy_pool",
+        ConnectionPool(lambda: connection_state["conn"], max_size=1),
+    )
     with connection.policy_db_transaction():
         pass
-    assert connection_state["conn"].events == ["begin", "commit", "close"]
+    assert connection_state["conn"].events == ["begin", "commit"]
 
     connection_state["conn"] = FakeConnection()
+    monkeypatch.setattr(
+        connection,
+        "policy_pool",
+        ConnectionPool(lambda: connection_state["conn"], max_size=1),
+    )
     with pytest.raises(RuntimeError):
         with connection.policy_db_transaction():
             raise RuntimeError("fail")
-    assert connection_state["conn"].events == ["begin", "rollback", "close"]
+    assert connection_state["conn"].events == ["begin", "rollback"]
 
 
 def test_policy_connection_requires_dedicated_database(monkeypatch):

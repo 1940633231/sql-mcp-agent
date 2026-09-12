@@ -1,4 +1,4 @@
-"""Tests for strict policy schema, semantic, and security validation."""
+"""权限策略结构、语义和安全校验测试。"""
 from copy import deepcopy
 
 import pytest

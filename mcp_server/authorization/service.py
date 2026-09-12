@@ -8,6 +8,7 @@ from sqlglot.errors import ParseError
 from ..auth.models import Principal, RequestContext, resolve_attribute
 from ..observability.fingerprint import raw_sql_hash, sql_fingerprint
 from ..observability.metrics import metrics
+from ..observability import tracing
 from ..security import parser
 from .audit import log_event
 from .lineage import LineageResolver
@@ -91,6 +92,33 @@ class AuthorizationService:
         ]
 
     def authorize_sql(
+        self,
+        sql: str,
+        context: RequestContext,
+        catalog: SchemaCatalog | None = None,
+    ) -> AuthorizationResult:
+        # V0.7：授权决策 Span（沿用请求 trace；不记录原始 SQL，只记决策结果）。
+        span = tracing.request_child_span(
+            "authorization.decision",
+            kind=tracing.SpanKind.INTERNAL,
+            attributes={"principal": context.principal.subject},
+        )
+        try:
+            result = self._authorize_sql_impl(sql, context, catalog)
+        except Exception:
+            tracing.tracer.end(span, status="error", attributes={"error_code": "authorization_internal"})
+            raise
+        tracing.tracer.end(
+            span,
+            status="ok" if result.allowed else "error",
+            attributes={
+                "decision": "allow" if result.allowed else "deny",
+                "code": result.code or "ok",
+            },
+        )
+        return result
+
+    def _authorize_sql_impl(
         self,
         sql: str,
         context: RequestContext,

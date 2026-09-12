@@ -1,0 +1,54 @@
+# V0.7 告警规则（进程内 AlertEngine + 可在 Prometheus/Grafana 侧对齐）。
+# signal 取值：error_rate / timeout_rate / tool_failure_rate /
+#            latency_p95_seconds / latency_p99_seconds / pool_saturation
+# op：> 或 < ；threshold：阈值；for：持续窗口（秒）后才转为 firing；
+# severity：critical / warning / info。
+rules:
+  - name: error_rate_high
+    signal: error_rate
+    op: ">"
+    threshold: 0.05
+    for: 60
+    severity: warning
+
+  - name: error_rate_critical
+    signal: error_rate
+    op: ">"
+    threshold: 0.20
+    for: 60
+    severity: critical
+
+  - name: p95_latency_high
+    signal: latency_p95_seconds
+    op: ">"
+    threshold: 5.0
+    for: 60
+    severity: warning
+
+  - name: p99_latency_high
+    signal: latency_p99_seconds
+    op: ">"
+    threshold: 10.0
+    for: 60
+    severity: warning
+
+  - name: timeout_rate_high
+    signal: timeout_rate
+    op: ">"
+    threshold: 0.30
+    for: 60
+    severity: warning
+
+  - name: tool_failure_rate_high
+    signal: tool_failure_rate
+    op: ">"
+    threshold: 0.10
+    for: 60
+    severity: warning
+
+  - name: pool_saturation_high
+    signal: pool_saturation
+    op: ">"
+    threshold: 0.90
+    for: 60
+    severity: critical

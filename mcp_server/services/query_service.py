@@ -24,6 +24,7 @@ from ..catalog.service import SchemaCatalog
 from ..database.executor import QueryExecutor
 from ..observability.fingerprint import raw_sql_hash, sql_fingerprint
 from ..observability.metrics import metrics
+from ..observability import tracing
 from ..security import parser
 from ..security.validator import SqlValidator
 
@@ -63,9 +64,53 @@ class QueryService:
     ) -> dict:
         """执行只读 SQL，返回可直接序列化的 dict（失败时含 error）。
 
-        params 为非空时表示 SQL 已含 ? 值占位符（领域工具渲染产物），
-        由 Executor 以数据库驱动绑定执行；run_query 等自由 SQL 保持 params=None。
+        V0.7：无论成功/失败都记录耗时；失败时按「错误码 × 工具 × 主体类型」
+        聚合错误率。成功/失败同时落 Span 到请求链。
         """
+        started = time.monotonic()
+        span = tracing.request_child_span("query.execute")
+        # 解析一次上下文供指标标签使用（鉴权失败时以 unknown 兜底）。
+        metric_ctx = context
+        if metric_ctx is None:
+            try:
+                metric_ctx = current_request_context(source="mcp")
+            except AuthenticationError:
+                metric_ctx = None
+
+        result = self._run(sql, context, params)
+        elapsed = time.monotonic() - started
+        status = "ok" if "error" not in result else "error"
+        code = result.get("code", "ok")
+        tool = (metric_ctx.tool_name if metric_ctx else "") or str(sql)[:20]
+        principal = _principal_category(metric_ctx) if metric_ctx else "unauthenticated"
+        attr = {
+            "status": status,
+            "code": code,
+            "tool": tool,
+            "duration_ms": round(elapsed * 1000, 3),
+        }
+
+        # 成功/失败都记录延迟：dashboard 的 SQL 延迟同时覆盖两类结果。
+        metrics.observe("query_duration_seconds", elapsed, {"status": status, "code": code})
+        # 无标签的整体延迟，供 P95/P99 告警与容量趋势聚合（不拆分维度）。
+        metrics.observe("query_latency_overall_seconds", elapsed)
+        if status == "error":
+            metrics.inc(
+                "query_errors_total",
+                {"code": code, "tool": tool, "principal": principal},
+            )
+            tracing.tracer.end(span, status="error", attributes=attr)
+        else:
+            tracing.tracer.end(span, status="ok", attributes=attr)
+        return result
+
+    def _run(
+        self,
+        sql: str,
+        context: RequestContext | None = None,
+        params: tuple | list | None = None,
+    ) -> dict:
+        """执行只读 SQL 的核心流程（不含 V0.7 指标包装）。"""
         started = time.monotonic()
         policy_context = get_policy_manager().get_context()
         try:
@@ -158,7 +203,6 @@ class QueryService:
             result_bytes=query_result.result_bytes,
         )
         metrics.inc("query_executions_total", {"status": "ok"})
-        metrics.observe("query_duration_seconds", time.monotonic() - started)
         return query_result.to_dict()
 
     def _ensure_limit(self, sql: str, enforce: bool, max_rows: int) -> str:
@@ -169,6 +213,23 @@ class QueryService:
         if parsed.has_limit:
             return sql
         return "%s LIMIT %d" % (sql, max_rows)
+
+
+def _principal_category(context: RequestContext | None) -> str:
+    """把主体映射为低基数「主体类型」标签，避免把具体用户塞进指标。
+
+    只按角色集合归类：admin 类 / 其它角色取前两个角色名 / 缺省即未认证。
+    """
+    if context is None or context.principal is None:
+        return "unauthenticated"
+    roles = sorted(context.principal.roles)
+    if not roles:
+        return "unauthenticated"
+    if any(
+        role in {"query_admin", "policy_admin", "admin"} for role in roles
+    ):
+        return "admin"
+    return ",".join(roles[:2])
 
 
 def _result_column_guard(actual_columns: list[str], allowed_columns: tuple[str, ...]) -> str | None:

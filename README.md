@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.6.0（Agent Reliability）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability
+> **当前版本：v0.7.0（Observability Hardening）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -19,6 +19,7 @@
 - Schema Intelligence：为表/列补充业务名、用途、口径与同义词（外置 `configs/schema_desc.yaml`），提供轻量语义检索 `search_schema`，让 Agent 生成 SQL 前先理解字段语义、减少幻觉列名
 - Domain Query Layer（V0.5）：`sales_summary` / `company_ranking` / `industry_analysis` 三个领域工具，模板与领域口径由服务端维护（`configs/domain_queries.yaml`），值参数经数据库驱动绑定、排序/分组/时间粒度等标识符只能取白名单；Agent 优先调用领域工具，复杂问题才回退 `run_query`
 - Agent Reliability（V0.6）：`AsyncOpenAI` + 连接/读取/单次调用超时 + 全局请求截止时间；临时错误退避重试（仅只读调用）、永久错误立即终止；统一预算（迭代/工具调用/SQL修复/Token/费用上限）杜绝无限循环与无限等待；SQL 修复仅针对语法/字段错误，权限/超时/危险 SQL 不进入盲重试；每次结束都返回稳定错误码（`success`/`timeout`/`model_error`/`tool_error`/`sql_syntax_error`/`permission_denied`/`budget_exceeded`）与用户可理解信息及运行指标（迭代数/工具调用数/修复次数/耗时/最终状态）
+- Observability Hardening（V0.7）：接入共享 `telemetry` 内核（OpenTelemetry 数据模型 + W3C `traceparent` 传播 + 有界内存缓冲 + 可选 OTLP/HTTP 导出），让 Agent → MCP → Authorization → Database 四层落在同一条 trace；任意一次请求都能靠 `request_id` 与 `trace_id` 跨服务完整定位。SQL 延迟**成功/失败都记录**，错误率按错误码、工具、主体类型聚合；Metrics 改为**有界直方图**（固定分桶，不再在内存保留全部样本），指标标签卫生化（禁止原始 SQL / 完整用户输入 / 高基数字段）。审计支持**异步落库、失败策略、保留周期与归档**。内置 `/dashboard`、`/alerts`、`/traces` 端点与进程内告警引擎，并配套 Grafana 面板与 Prometheus 告警规则（错误率 / P95/P99 延迟 / 超时率 / 工具失败率 / 连接池饱和度）
 
 ## 架构
 
@@ -230,12 +231,16 @@ python -m agent.agent "各行业今年的销售总额排名" --trace
 ```
 agent/                  Agent 侧
   config.py             LLM 参数 + MCP 端点
-  client.py             MCP 会话管理与 MCP→OpenAI 适配
-  agent.py              SQLAgent（ReAct + function calling）主循环
+  client.py             MCP 会话管理与 MCP→OpenAI 适配（V0.7：注入 traceparent）
+  agent.py              SQLAgent（ReAct + function calling）主循环（V0.7：Agent 层 Span）
+  reliability.py        超时/退避重试/统一预算/稳定错误码
+
+telemetry/              共享遥测内核（V0.7，纯标准库，Server 与 Agent 共用）
+  __init__.py           Span 模型 / W3C traceparent / 有界内存缓冲 / OTLP-HTTP 导出
 
 mcp_server/             Server 侧
-  server.py             入口：注册工具/资源、启动传输层
-  config.py             数据库连接 + 传输参数
+  server.py             入口：注册工具/资源、启动传输层、/healthz /readyz /metrics /traces /dashboard /alerts
+  config.py             数据库连接 + 传输参数 + 审计/遥测/告警配置
   tools/
     schema.py           list_tables / get_schema / search_schema
     query.py            run_query（仅 MCP 协议转换，委托 QueryService）
@@ -247,14 +252,18 @@ mcp_server/             Server 侧
     registry.py         configs/domain_queries.yaml 加载与 mtime 重载
     service.py          编排：渲染 → QueryService → 统一 DTO（data/columns/meta/版本/truncated）
   services/
-    query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
+    query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛（V0.7：延迟成功/失败 + 错误率 + Span）
   auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
   catalog/               SchemaCatalog：表/列/键/索引缓存
                         + semantic.py：业务描述加载与轻量语义检索
-  observability/         Trace ID / Audit sink / Metrics / Health / Lifecycle
+  observability/         Trace ID / Audit sink / Metrics / Health / Lifecycle / Alerts（V0.7 加固）
+    tracing.py           Server 侧 Span 封装（绑定 TraceContext，跨线程延续父子链）
+    metrics.py           有界直方图 + 标签卫生（禁止原始 SQL/高基数）
+    alerts.py            进程内告警引擎 + Dashboard 信号聚合
+    health.py            /healthz /readyz /metrics /traces /dashboard /alerts 响应构造
   authorization/         授权：RBAC / ACL / 列可见性 / RLS / SQL 策略改写 / 审计
                         + Schema/Semantic/Security Validator / Policy DB / 事务发布
-                        + 策略版本存储与热加载 / CTE 列血缘 / JSON 审计
+                        + 策略版本存储与热加载 / CTE 列血缘 / JSON 审计（V0.7：异步+失败策略+保留+归档）
   security/             只读安全防线
     models.py           数据模型（策略/解析结果/校验结果/查询结果）
     parser.py           基于 sqlglot 的 AST 解析（表/列/函数/JOIN/子查询深度）
@@ -262,13 +271,16 @@ mcp_server/             Server 侧
     validator.py        校验流水线 → ValidationResult（语句/表/列 ACL/JOIN 上限）
   database/
     connection.py       pymysql 连接与游标上下文
-    executor.py         只读查询执行（超时 + 行数 + 字节上限 + 驱动参数绑定），不含安全判定
+    executor.py         只读查询执行（超时 + 行数 + 字节上限 + 驱动参数绑定 + Database Span）
   policy_admin.py       策略管理 CLI：validate/status/publish/list/export
 
 configs/security.yaml   安全策略（只读白名单/系统库/表列 Allowlist/JOIN/成本限制）
 configs/permissions.yaml 权限策略（角色、主体、表/列 ACL、行级策略）
 configs/schema_desc.yaml 业务语义元数据（表/列业务名、用途、口径、同义词、枚举）
 configs/domain_queries.yaml V0.5 领域查询定义（SQL 模板/参数/结果契约/领域口径）
+configs/alerts.yaml      V0.7 进程内告警规则（阈值/窗口/严重度）
+configs/prometheus/alerts.yml  V0.7 外部 Prometheus 告警规则（与 /metrics 对齐）
+configs/grafana/dashboard.json V0.7 Grafana 面板（错误率/P95/P99/超时率/工具失败率/池饱和度）
 
 tests/                  单元测试（pytest）
   test_sql_parser.py    解析：拆分、分类、抽表名、标识符
@@ -283,6 +295,7 @@ tests/                  单元测试（pytest）
   test_permission_integration.py 真实 MySQL 多主体与 CTE 集成测试
   test_schema_semantic.py  Schema Intelligence：语义加载/检索/查询模型/ACL 裁剪
   test_domain_query.py    V0.5 领域查询：参数白名单/驱动绑定/RLS 一致性/DTO/截断超时/DB 集成
+  test_observability_v07.py V0.7 有界直方图/标签卫生/traceparent+Span/告警/审计
 
 scripts/                辅助脚本
   db_init.py            建库、建表、造数
@@ -324,9 +337,10 @@ $env:RUN_DB_TESTS=1; python -m pytest tests/test_domain_query.py -q            #
 - **连接池与 SchemaCatalog**：Business/Policy 独立连接池，SchemaCatalog 提供 TTL 缓存和表/列/主键/外键/索引接口
 - **Schema Intelligence（V0.4）**：业务语义外置在 `configs/schema_desc.yaml`（无数据库只读账号写权限依赖、纯内存加载）；`search_schema` 先过 `schema:read` 权限，再按表/列 ACL 裁剪结果——敏感列的**描述本身**也不会泄露
 - **Domain Query Layer（V0.5）**：领域工具不直接访问数据库；模板与口径外置 `configs/domain_queries.yaml`（mtime 重载 + `definition_version` 哈希）；值参数类型/范围校验后经驱动绑定，排序/分组/粒度标识符只走白名单；RLS 改写发生在统一 QueryService 内，任意主体行为与 `run_query` 一致
-- **审计**：默认 JSON 日志，可通过 `AUDIT_STORE=mysql` 写入策略库；包含 policy_version、trace_id、request_id、SQL fingerprint、耗时和结果统计
-- **运行态接口**：`/healthz`、`/readyz`、`/metrics`，支持容器探针和 Prometheus 采集
-- **优雅退出**：停止接收新请求、等待在途请求排空、关闭连接池后退出
+- **审计**：默认 JSON 日志，可通过 `AUDIT_STORE=mysql` 写入策略库；V0.7 支持后台异步批量落库、失败策略（ignore/warn/fail）、保留周期与归档表；`AUDIT_REQUIRED=true` 时同步保证必然入库；包含 policy_version、trace_id、request_id、SQL fingerprint、耗时和结果统计
+- **运行态接口**：`/healthz`、`/readyz`、`/metrics`（Prometheus），支持容器探针和 Prometheus 采集；V0.7 新增 `/traces`（最近 span）、`/dashboard`（运行态概览）、`/alerts`（告警状态）
+- **可观测性（V0.7）**：共享 `telemetry` 内核提供 OpenTelemetry 数据模型 + W3C `traceparent` 跨服务传播，Agent → MCP → Authorization → Database 四层 Span 落在同一条 trace；SQL 延迟成功/失败都记录，错误率按错误码 × 工具 × 主体类型聚合；Metrics 用有界直方图（固定分桶）避免内存无限增长，标签卫生禁止原始 SQL/完整用户输入/高基数字段；进程内告警引擎评估错误率 / P95/P99 延迟 / 超时率 / 工具失败率 / 连接池饱和度；配套 Grafana 面板 `configs/grafana/dashboard.json` 与 Prometheus 告警规则 `configs/prometheus/alerts.yml`
+- **优雅退出**：停止接收新请求、等待在途请求排空、排空审计队列、关闭连接池后退出
 
 ## 已知边界
 

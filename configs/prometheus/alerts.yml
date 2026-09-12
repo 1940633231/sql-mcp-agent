@@ -1,0 +1,67 @@
+# Prometheus Alert Rules（与 /metrics 暴露的指标对齐，供外部 Prometheus 告警）。
+# 进程内 ALSO 自带 AlertEngine（configs/alerts.yaml），本文件是部署 Prometheus 时的外部等价物。
+groups:
+  - name: sql_mcp_observability
+    rules:
+      - alert: SQLMCPErrorRateHigh
+        expr: sum(rate(query_errors_total[5m])) / clamp_min(sum(rate(query_executions_total[5m])), 0.0001) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SQL 查询错误率超过 5%"
+          description: "当前错误率 {{ $value | humanizePercentage }}（5m 窗口）。"
+
+      - alert: SQLMCPErrorRateCritical
+        expr: sum(rate(query_errors_total[5m])) / clamp_min(sum(rate(query_executions_total[5m])), 0.0001) > 0.20
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SQL 查询错误率超过 20%"
+          description: "当前错误率 {{ $value | humanizePercentage }}（5m 窗口）。"
+
+      - alert: SQLMCPP95LatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(query_latency_overall_seconds_bucket[5m]))) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SQL 查询 P95 延迟超过 5s"
+          description: "当前 P95 = {{ $value }}s（5m 窗口）。"
+
+      - alert: SQLMCPP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(query_latency_overall_seconds_bucket[5m]))) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SQL 查询 P99 延迟超过 10s"
+          description: "当前 P99 = {{ $value }}s（5m 窗口）。"
+
+      - alert: SQLMCPTimeoutRateHigh
+        expr: sum(rate(query_errors_total{code="query_timeout"}[5m])) / clamp_min(sum(rate(query_errors_total[5m])), 0.0001) > 0.30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SQL 查询超时率超过 30%"
+          description: "当前超时占错误比例 = {{ $value | humanizePercentage }}。"
+
+      - alert: SQLMCPToolFailureRateHigh
+        expr: sum(rate(mcp_requests_total{status="error"}[5m])) / clamp_min(sum(rate(mcp_requests_total[5m])), 0.0001) > 0.10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MCP 工具调用失败率超过 10%"
+          description: "当前工具失败率 = {{ $value | humanizePercentage }}。"
+
+      - alert: SQLMCPPoolSaturationHigh
+        expr: db_pool_saturation_business > 0.90
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "业务连接池接近饱和"
+          description: "当前业务连接池饱和度 = {{ $value | humanizePercentage }}。"

@@ -29,6 +29,8 @@ import httpx2
 import openai
 from openai import AsyncOpenAI
 
+from telemetry import SpanKind, tracer
+
 from . import config
 from .client import extract_result, mcp_session, to_openai_tool
 from .reliability import (
@@ -221,9 +223,13 @@ class SQLAgent:
             if call_timeout <= 0:
                 raise AgentTimeout("请求截止时间已耗尽，停止模型调用。")
             try:
-                resp = await asyncio.wait_for(
-                    self._responder(messages, schemas), timeout=call_timeout
-                )
+                with tracer.span(
+                    "agent.llm", kind=SpanKind.CLIENT,
+                    attributes={"model": config.LLM_MODEL},
+                ):
+                    resp = await asyncio.wait_for(
+                        self._responder(messages, schemas), timeout=call_timeout
+                    )
                 self._account_usage(budget, resp)
                 return resp
             except asyncio.TimeoutError:
@@ -290,9 +296,13 @@ class SQLAgent:
             call_timeout = min(config.MCP_CALL_TIMEOUT_SECONDS,
                                deadline_remaining(deadline))
             try:
-                raw = await asyncio.wait_for(
-                    session.call_tool(name, args), timeout=call_timeout
-                )
+                with tracer.span(
+                    "agent.tool." + name, kind=SpanKind.CLIENT,
+                    attributes={"tool": name},
+                ):
+                    raw = await asyncio.wait_for(
+                        session.call_tool(name, args), timeout=call_timeout
+                    )
             except asyncio.TimeoutError:
                 return "工具调用超时：%s" % name, ErrorKind.FATAL_TIMEOUT
             except AgentError:
@@ -440,6 +450,11 @@ class SQLAgent:
         返回 RunResult（答案 + 稳定错误码 + 指标），不再返回裸字符串。
         """
         started = time.monotonic()
+        # V0.7：Agent 层根 Span；不记录完整问题（标签卫生，只留长度与指纹）。
+        root_span = tracer.start(
+            "agent.run", kind=SpanKind.SERVER,
+            attributes={"question_len": len(question), "model": config.LLM_MODEL},
+        )
         deadline = make_deadline(config.REQUEST_DEADLINE_SECONDS)
         budget = Budget(
             max_iterations=config.LLM_MAX_TOOL_ITERATIONS,
@@ -499,6 +514,17 @@ class SQLAgent:
             result.token_count = budget.total_tokens
             result.cost = round(budget.total_cost, 6)
             result.elapsed_seconds = round(time.monotonic() - started, 3)
+            tracer.end(
+                root_span,
+                status="ok" if result.status is ErrorCode.SUCCESS else "error",
+                attributes={
+                    "status": result.status.value,
+                    "iterations": result.iteration_count,
+                    "tool_calls": result.tool_call_count,
+                    "tokens": result.token_count,
+                    "duration_ms": round(result.elapsed_seconds * 1000, 3),
+                },
+            )
         return result
 
 

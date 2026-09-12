@@ -1,6 +1,7 @@
 """查询执行层：在连接上执行已校验的 SQL / 读取表结构，施加超时、行数与字节上限。"""
 import time
 
+from ..observability import tracing
 from ..security.models import QueryResult
 from .connection import db_cursor
 
@@ -107,15 +108,24 @@ class QueryExecutor:
         任一项超限即截断。
         """
         start = time.time()
-        with db_cursor() as cur:
-            cur.execute("SET SESSION MAX_EXECUTION_TIME=%d" % (timeout_seconds * 1000))
-            if params:
-                sql, params = _bind_params(sql, tuple(params))
-                cur.execute(sql, params)
-            else:
-                cur.execute(sql)
-            fetched = cur.fetchmany(size=max_rows)
-            columns = [d[0] for d in cur.description] if cur.description else []
+        # V0.7：数据库层 Span（依赖请求链延续同一 trace_id，不记录原始 SQL）。
+        span = tracing.request_child_span(
+            "database.query", kind=tracing.SpanKind.CLIENT,
+            attributes={"rows_cap": max_rows, "timeout_s": timeout_seconds},
+        )
+        try:
+            with db_cursor() as cur:
+                cur.execute("SET SESSION MAX_EXECUTION_TIME=%d" % (timeout_seconds * 1000))
+                if params:
+                    sql, params = _bind_params(sql, tuple(params))
+                    cur.execute(sql, params)
+                else:
+                    cur.execute(sql)
+                fetched = cur.fetchmany(size=max_rows)
+                columns = [d[0] for d in cur.description] if cur.description else []
+        except Exception:
+            tracing.tracer.end(span, status="error", attributes={"error_code": "database_query_error"})
+            raise
 
         rows: list[dict] = []
         result_bytes = 0
@@ -130,11 +140,13 @@ class QueryExecutor:
         if not truncated_reason and len(rows) >= max_rows:
             truncated_reason = "rows"
 
+        elapsed = round(time.time() - start, 3)
+        tracing.tracer.end(span, status="ok", attributes={"duration_ms": span.duration_ms()})
         return QueryResult(
             columns=columns,
             rows=rows,
             row_count=len(rows),
-            elapsed_seconds=round(time.time() - start, 3),
+            elapsed_seconds=elapsed,
             truncated=bool(truncated_reason),
             result_bytes=result_bytes,
             truncated_reason=truncated_reason,

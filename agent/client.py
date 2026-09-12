@@ -5,6 +5,7 @@
 - extract_result  从 MCP 调用结果中取出可喂回 LLM 的文本
 
 V0.6：连接 / 读取超时由 http_client 的 httpx 超时施加（连接、读、写、连接池）。
+V0.7：把当前 trace 的 W3C traceparent 注入 MCP 请求头，让一次请求跨服务对齐同一 trace_id。
 """
 import json
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from . import config
+from telemetry import tracer
 
 
 def _http_timeout() -> httpx2.Timeout:
@@ -32,6 +34,9 @@ async def mcp_session(url: str | None = None):
     headers = {}
     if config.MCP_AUTH_TOKEN:
         headers["Authorization"] = "Bearer %s" % config.MCP_AUTH_TOKEN
+    traceparent = tracer.current_traceparent()
+    if traceparent:
+        headers["traceparent"] = traceparent
     http_client = create_mcp_http_client(
         headers=headers or None,
         timeout=_http_timeout(),

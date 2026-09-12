@@ -106,11 +106,27 @@ SCHEMA_CACHE_MAX_ENTRIES = int(os.getenv("SCHEMA_CACHE_MAX_ENTRIES", "256"))
 SCHEMA_DESC_PATH = os.getenv("SCHEMA_DESC_PATH", "")
 # V0.5 Domain Query Layer：领域查询定义文件路径（默认为 configs/domain_queries.yaml）
 DOMAIN_QUERIES_PATH = os.getenv("DOMAIN_QUERIES_PATH", "")
+# V0.7 Observability：审计异步写入 / 失败策略 / 保留与归档
 AUDIT_STORE = os.getenv("AUDIT_STORE", "log").strip().lower()
 AUDIT_REQUIRED = os.getenv("AUDIT_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
-AUDIT_TABLE = "request_audit_events"
+# 审计落库失败策略：ignore=静默丢弃 / warn=记日志 / fail=标记不健康并暴露到 /healthz。
+AUDIT_FAILURE = os.getenv("AUDIT_FAILURE", "warn").strip().lower()
+# true=后台异步写入（默认可靠）；false=进程内同步写（低吞吐场景）。
+AUDIT_ASYNC = os.getenv("AUDIT_ASYNC", "true").strip().lower() in {"1", "true", "yes", "on"}
+AUDIT_TABLE = os.getenv("AUDIT_TABLE", "request_audit_events")
+AUDIT_QUEUE_SIZE = int(os.getenv("AUDIT_QUEUE_SIZE", "10000"))
+# 保留周期与归档：超过 retention 的行先归档（AUDIT_ARCHIVE=true）再清理。
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "30"))
+AUDIT_ARCHIVE = os.getenv("AUDIT_ARCHIVE", "false").strip().lower() in {"1", "true", "yes", "on"}
+AUDIT_ARCHIVE_TABLE = os.getenv("AUDIT_ARCHIVE_TABLE", "request_audit_events_archive")
+AUDIT_MAINT_INTERVAL_SECONDS = int(os.getenv("AUDIT_MAINT_INTERVAL_SECONDS", "300"))
 SHUTDOWN_GRACE_SECONDS = float(os.getenv("SHUTDOWN_GRACE_SECONDS", "20"))
 POLICY_AUDIT_TABLE = "permission_policy_events"
+
+# V0.7 Observability：OTLP / Dashboard / 告警
+OTEL_OTLP_HTTP_ENDPOINT = os.getenv("OTEL_OTLP_HTTP_ENDPOINT", "").strip().rstrip("/")
+ALERT_RULES_PATH = os.getenv("ALERT_RULES_PATH", "")  # 默认 configs/alerts.yaml
+ALERT_EVAL_SECONDS = float(os.getenv("ALERT_EVAL_SECONDS", "30"))
 
 
 def get_policy_connection() -> dict:

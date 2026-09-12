@@ -10,6 +10,8 @@ class TraceContext:
     session_id: str = ""
     client_id: str = ""
     tool_name: str = ""
+    # V0.7：当前（根）Span 的 span_id，供跨线程/下游 child span 延续父子链。
+    span_id: str = ""
 
 
 _trace_context: ContextVar[TraceContext] = ContextVar(

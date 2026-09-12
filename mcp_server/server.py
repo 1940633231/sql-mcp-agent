@@ -30,9 +30,19 @@ from starlette.responses import JSONResponse, Response
 from . import config
 from .auth.token_verifier import build_auth_settings
 from .database.connection import close_pools
-from .observability.health import health, metrics_payload, readiness
+from .observability.health import (
+    alerts_payload,
+    dashboard_payload,
+    health,
+    metrics_payload,
+    readiness,
+    traces_payload,
+)
+from .observability import alerts as alerts_mod
+from .observability import tracing as tracing_mod
 from .observability.lifecycle import lifecycle
 from .observability.middleware import trace_middleware
+from .authorization import audit as audit_mod
 from .tools import domain as domain_tools
 from .tools import policy_admin as policy_admin_tools
 from .tools import query as query_tools
@@ -46,6 +56,10 @@ _auth_settings, _token_verifier = build_auth_settings()
 @asynccontextmanager
 async def lifespan(server):
     lifecycle.set_ready()
+    # V0.7：启动可观测系统（审计后台写入、OTLP 导出、进程内排空结束）。
+    audit_mod.audit_start()
+    tracing_mod.start_exporter()
+    alerts_mod.alert_engine.start()
     logger.info("MCP server ready")
     try:
         yield
@@ -53,6 +67,9 @@ async def lifespan(server):
         lifecycle.set_draining()
         logger.info("MCP server draining in-flight requests")
         await lifecycle.wait_for_drain(config.SHUTDOWN_GRACE_SECONDS)
+        audit_mod.audit_flush()
+        audit_mod.audit_stop()
+        tracing_mod.tracer.buffer.clear()
         close_pools()
         lifecycle.set_stopped()
         logger.info("MCP server stopped")
@@ -85,6 +102,21 @@ async def readyz(request: Request) -> Response:
 @server.custom_route("/metrics", methods=["GET"], include_in_schema=False)
 async def metrics_endpoint(request: Request) -> Response:
     return Response(metrics_payload(), media_type="text/plain; version=0.0.4")
+
+
+@server.custom_route("/traces", methods=["GET"], include_in_schema=False)
+async def traces_endpoint(request: Request) -> Response:
+    return JSONResponse(traces_payload())
+
+
+@server.custom_route("/dashboard", methods=["GET"], include_in_schema=False)
+async def dashboard_endpoint(request: Request) -> Response:
+    return JSONResponse(dashboard_payload())
+
+
+@server.custom_route("/alerts", methods=["GET"], include_in_schema=False)
+async def alerts_endpoint(request: Request) -> Response:
+    return JSONResponse(alerts_payload())
 
 
 # ---------- Resources：URI 寻址的只读数据 ----------

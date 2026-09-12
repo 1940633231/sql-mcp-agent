@@ -24,3 +24,6 @@ Thumbs.db
 
 # 测试 / 临时
 *.log
+
+#升级计划
+.trae/

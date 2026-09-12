@@ -1,9 +1,12 @@
 """MySQL SQL MCP Server 入口：组装工具与资源，启动传输层。
 
-对外暴露 3 个数据查询工具与 6 个策略管理工具：
+对外暴露 6 个数据查询工具与 6 个策略管理工具：
     - list_tables    列出业务库所有表
     - get_schema     查看某张表的结构
+    - search_schema  按业务语义检索表/列
     - run_query      执行只读 SQL（仅允许单条 SELECT）
+    - sales_summary / company_ranking / industry_analysis
+                     领域查询工具（参数白名单 + 驱动绑定，复用 QueryService 安全链路）
 策略管理工具按 policy:read/validate/publish 权限分别授权。
 
 另暴露 2 个只读资源（URI 寻址的静态数据，供应用预取/客户端挂载）：
@@ -30,6 +33,7 @@ from .database.connection import close_pools
 from .observability.health import health, metrics_payload, readiness
 from .observability.lifecycle import lifecycle
 from .observability.middleware import trace_middleware
+from .tools import domain as domain_tools
 from .tools import policy_admin as policy_admin_tools
 from .tools import query as query_tools
 from .tools import schema as schema_tools
@@ -64,6 +68,7 @@ server = MCPServer(
 schema_tools.register(server)
 policy_admin_tools.register(server)
 query_tools.register(server)
+domain_tools.register(server)
 
 
 @server.custom_route("/healthz", methods=["GET"], include_in_schema=False)

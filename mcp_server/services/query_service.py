@@ -55,8 +55,17 @@ class QueryService:
     def policy(self):
         return self.validator.policy
 
-    def run(self, sql: str, context: RequestContext | None = None) -> dict:
-        """执行只读 SQL，返回可直接序列化的 dict（失败时含 error）。"""
+    def run(
+        self,
+        sql: str,
+        context: RequestContext | None = None,
+        params: tuple | list | None = None,
+    ) -> dict:
+        """执行只读 SQL，返回可直接序列化的 dict（失败时含 error）。
+
+        params 为非空时表示 SQL 已含 ? 值占位符（领域工具渲染产物），
+        由 Executor 以数据库驱动绑定执行；run_query 等自由 SQL 保持 params=None。
+        """
         started = time.monotonic()
         policy_context = get_policy_manager().get_context()
         try:
@@ -92,9 +101,18 @@ class QueryService:
             if not self._semaphore.acquire(blocking=False):
                 raise ConcurrentQueriesExceeded("并发查询数已达上限 %d" % policy.max_concurrent_queries)
             try:
-                query_result = self.executor.run(
-                    safe_sql, policy.max_rows, policy.timeout_seconds, policy.max_result_bytes
-                )
+                if params:
+                    query_result = self.executor.run(
+                        safe_sql,
+                        policy.max_rows,
+                        policy.timeout_seconds,
+                        policy.max_result_bytes,
+                        params=params,
+                    )
+                else:
+                    query_result = self.executor.run(
+                        safe_sql, policy.max_rows, policy.timeout_seconds, policy.max_result_bytes
+                    )
             finally:
                 self._semaphore.release()
         except Exception as e:

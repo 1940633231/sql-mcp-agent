@@ -1,0 +1,124 @@
+# V0.5 Domain Query Layer：领域查询定义
+# SQL 模板由服务端维护；{slot} 为参数槽位：
+#   - identifiers（如 granularity / sort_by / order_dir）：只允许取 identifiers 白名单
+#     内映射的固定 SQL 片段（内联到语句，可被 AST Guard 校验）；
+#   - parameters（如 start_date / limit / industry）：值先经类型与范围校验，
+#     再以驱动占位符 ? 绑定执行（数据库驱动转义，杜绝值注入）。
+# version 变更即 definition_version 变化（哈希联动），随结果 DTO 返回。
+
+version: 1
+
+tools:
+  sales_summary:
+    description: 按时间粒度汇总销售流水（订单数、销售额、客单价），可指定日期区间与公司。
+    sql: |
+      SELECT {granularity} AS period,
+             COUNT(*) AS order_count,
+             SUM(amount) AS total_amount,
+             ROUND(AVG(amount), 2) AS avg_amount
+      FROM sale_records
+      WHERE record_date >= {start_date} AND record_date <= {end_date}
+        AND company_id = COALESCE({company_id}, company_id)
+      GROUP BY {granularity}
+      ORDER BY {granularity} ASC
+      LIMIT {limit}
+    parameters:
+      - {name: start_date, type: date, required: true, description: 起始日期（含），YYYY-MM-DD}
+      - {name: end_date, type: date, required: true, description: 结束日期（含），YYYY-MM-DD}
+      - {name: granularity, type: identifier, default: month, description: 时间粒度 day/week/month/quarter/year}
+      - {name: company_id, type: integer, min: 1, description: 公司编号，缺省统计全部公司}
+      - {name: limit, type: integer, default: 200, min: 1, max: 200, description: 返回周期数上限}
+    identifiers:
+      granularity:
+        day: "DATE_FORMAT(record_date, '%Y-%m-%d')"
+        week: "DATE_FORMAT(record_date, '%x-W%v')"
+        month: "DATE_FORMAT(record_date, '%Y-%m')"
+        quarter: "CONCAT(YEAR(record_date), '-Q', QUARTER(record_date))"
+        year: "DATE_FORMAT(record_date, '%Y')"
+    result_columns: [period, order_count, total_amount, avg_amount]
+    max_limit: 200
+    semantics:
+      granularity: 时间粒度支持 day/week/month/quarter/year；week 采用 ISO 周（%x-W%v）
+      timezone: record_date 为 DATE 类型、不含时区；日期区间按业务时区 Asia/Shanghai 解释
+      sales_caliber: 销售额 = SUM(amount)，amount 为单笔成交额（元，DECIMAL(14,2)）
+      refunds_included: sale_records 无退款/取消状态字段，所有记录均视为有效成交、全额计入
+      date_range: "[start_date, end_date] 闭区间（含边界）"
+
+  company_ranking:
+    description: 按销售额/单量/客单价对公司排名，可指定行业与时间窗口；并列按公司编号升序确定唯一。
+    sql: |
+      SELECT c.company_id, c.name, c.industry,
+             SUM(s.amount) AS total_amount,
+             COUNT(*) AS order_count,
+             ROUND(AVG(s.amount), 2) AS avg_amount
+      FROM sale_records s
+      JOIN company c ON c.company_id = s.company_id
+      WHERE s.record_date >= {start_date} AND s.record_date <= {end_date}
+        AND c.industry = COALESCE({industry}, c.industry)
+      GROUP BY c.company_id, c.name, c.industry
+      ORDER BY {sort_by} {order_dir}, c.company_id ASC
+      LIMIT {limit}
+    parameters:
+      - {name: start_date, type: date, required: true, description: 起始日期（含），YYYY-MM-DD}
+      - {name: end_date, type: date, required: true, description: 结束日期（含），YYYY-MM-DD}
+      - {name: industry, type: enum, allowlist: [零售, 快消, 电子, 汽车, 医药, 金融, 能源, 互联网, 地产, 餐饮, 服装, 家居], description: 行业过滤，缺省全部行业}
+      - {name: sort_by, type: identifier, default: total_amount, description: 排名指标 total_amount/order_count/avg_amount}
+      - {name: order_dir, type: identifier, default: desc, description: 排序方向 asc/desc}
+      - {name: limit, type: integer, default: 10, min: 1, max: 50, description: 返回公司数上限}
+    identifiers:
+      sort_by:
+        total_amount: "SUM(s.amount)"
+        order_count: "COUNT(*)"
+        avg_amount: "AVG(s.amount)"
+      order_dir:
+        asc: "ASC"
+        desc: "DESC"
+    result_columns: [company_id, name, industry, total_amount, order_count, avg_amount]
+    max_limit: 50
+    semantics:
+      metric: 排名指标为 total_amount（销售额）/ order_count（单量）/ avg_amount（客单价），按窗口内聚合值排序
+      time_window: "[start_date, end_date] 闭区间，按 record_date 过滤"
+      tie_breaking: 指标相同时按 company_id 升序，保证排名确定唯一
+      max_limit: 50（服务端硬上限，limit 参数不得超过该值）
+
+  industry_analysis:
+    description: 按行业聚合销售额/单量/公司数及行业占比，可指定时间窗口与行业过滤。
+    sql: |
+      SELECT c.industry,
+             COUNT(DISTINCT c.company_id) AS company_count,
+             COUNT(*) AS order_count,
+             SUM(s.amount) AS total_amount,
+             ROUND(SUM(s.amount) / NULLIF(MAX(d.total), 0) * 100, 2) AS share_percent
+      FROM sale_records s
+      JOIN company c ON c.company_id = s.company_id
+      JOIN (
+          SELECT SUM(r.amount) AS total FROM sale_records r
+          WHERE r.record_date >= {start_date} AND r.record_date <= {end_date}
+      ) d ON 1 = 1
+      WHERE s.record_date >= {start_date} AND s.record_date <= {end_date}
+        AND c.industry = COALESCE({industry}, c.industry)
+      GROUP BY c.industry
+      ORDER BY {sort_by} {order_dir}, c.industry ASC
+      LIMIT {limit}
+    parameters:
+      - {name: start_date, type: date, required: true, description: 起始日期（含），YYYY-MM-DD}
+      - {name: end_date, type: date, required: true, description: 结束日期（含），YYYY-MM-DD}
+      - {name: industry, type: enum, allowlist: [零售, 快消, 电子, 汽车, 医药, 金融, 能源, 互联网, 地产, 餐饮, 服装, 家居], description: 行业过滤，缺省全部行业}
+      - {name: sort_by, type: identifier, default: total_amount, description: 排序指标 total_amount/order_count/company_count}
+      - {name: order_dir, type: identifier, default: desc, description: 排序方向 asc/desc}
+      - {name: limit, type: integer, default: 50, min: 1, max: 50, description: 返回行业数上限}
+    identifiers:
+      sort_by:
+        total_amount: "SUM(s.amount)"
+        order_count: "COUNT(*)"
+        company_count: "COUNT(DISTINCT c.company_id)"
+      order_dir:
+        asc: "ASC"
+        desc: "DESC"
+    result_columns: [industry, company_count, order_count, total_amount, share_percent]
+    max_limit: 50
+    semantics:
+      dimension: 行业维度取 company.industry（公司主数据归属行业）
+      unknown_industry: industry 参数必须命中服务端行业白名单，未命中返回 invalid_parameter 拒绝
+      denominator: "share_percent = 行业销售额 / 窗口内全部行业销售额合计；分母由派生表独立计算（不受行业过滤影响，受 RLS 约束，按当前主体可见数据计算）"
+      coverage: 仅统计窗口内有成交记录的公司/行业；无成交记录的公司不计入

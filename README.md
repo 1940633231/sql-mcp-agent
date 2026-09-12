@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.4.1（基线冻结版）**；V0.4 Schema Intelligence + 契约锁定 + CI
+> **当前版本：v0.5.0（领域查询层）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -17,6 +17,7 @@
 - 请求级权限：认证 Principal → RBAC → 表/列 ACL → Row-Level Security → SQL 重写 → 审计
 - 受限用户查询 `SELECT *` 时自动展开可见列；schema 工具与 Resource 也只返回当前主体可见的表和列
 - Schema Intelligence：为表/列补充业务名、用途、口径与同义词（外置 `configs/schema_desc.yaml`），提供轻量语义检索 `search_schema`，让 Agent 生成 SQL 前先理解字段语义、减少幻觉列名
+- Domain Query Layer（V0.5）：`sales_summary` / `company_ranking` / `industry_analysis` 三个领域工具，模板与领域口径由服务端维护（`configs/domain_queries.yaml`），值参数经数据库驱动绑定、排序/分组/时间粒度等标识符只能取白名单；Agent 优先调用领域工具，复杂问题才回退 `run_query`
 
 ## 架构
 
@@ -85,6 +86,9 @@ MCP 对外能力：
 | Tool | `get_schema(table_name)` | 查看某表完整结构 DTO（表级描述/主键/外键/索引 + 列含业务描述/枚举），按 ACL 裁剪可见列与被引用表/列 |
 | Tool | `search_schema(keyword)` | 按关键字检索表/列的业务语义（业务名/别名/同义词/描述） |
 | Tool | `run_query(sql)` | 执行只读 SQL（仅单条 SELECT），返回行数据 |
+| Tool | `sales_summary(start_date, end_date, granularity, company_id, limit)` | 按时间粒度汇总销售额/订单数/客单价（时间粒度/时区/销售额口径显式定义） |
+| Tool | `company_ranking(start_date, end_date, industry, sort_by, order_dir, limit)` | 按销售额/单量/客单价对公司排名（并列按 company_id 升序，limit ≤ 50） |
+| Tool | `industry_analysis(start_date, end_date, industry, sort_by, order_dir, limit)` | 按行业聚合销售额/单量/公司数及占比（分母为窗口内全部行业销售额，受 RLS 约束） |
 | Tool | `get_policy_status()` | 查看 active 权限策略版本与来源 |
 | Tool | `reload_permission_policy()` | 强制热重载策略 |
 | Tool | `validate_permission_policy(document)` | 校验策略但不发布（需 `policy:validate`） |
@@ -94,14 +98,22 @@ MCP 对外能力：
 | Resource | `database://schema` | 全库各表完整结构 DTO（含表描述/键/外键/索引/枚举，应用预取，省钱省轮次） |
 | Resource | `database://table/{table_name}` | 单表完整结构 DTO（URI 模板资源） |
 
-## 稳定 API 契约（V0.4.1）
+## 稳定 API 契约（V0.5）
 
-以下对外接口为 **v0.4.1 基线冻结**，任何增删改须显式走版本演进（`CHANGELOG.md` 记录）。`tests/test_api_contract.py` 锁定 Tool 清单，改动即回归失败。
+以下对外接口为 **v0.5.0 基线冻结**，任何增删改须显式走版本演进并同步更新 `tests/test_api_contract.py`（改动即回归失败）。
 
-- **Tool（10 个）**：`list_tables` / `get_schema(table_name)` / `search_schema(keyword, deep=false)` / `run_query(sql)` / `get_policy_status` / `reload_permission_policy` / `validate_permission_policy(document)` / `publish_permission_policy(document, expected_version)` / `list_permission_policy_versions(limit)` / `export_permission_policy`。
+- **Tool（13 个）**：`list_tables` / `get_schema(table_name)` / `search_schema(keyword, deep=false)` / `run_query(sql)` / `sales_summary(start_date, end_date, granularity, company_id, limit)` / `company_ranking(start_date, end_date, industry, sort_by, order_dir, limit)` / `industry_analysis(start_date, end_date, industry, sort_by, order_dir, limit)` / `get_policy_status` / `reload_permission_policy` / `validate_permission_policy(document)` / `publish_permission_policy(document, expected_version)` / `list_permission_policy_versions(limit)` / `export_permission_policy`。
 - **Resource（2 个）**：`database://schema`、`database://table/{table_name}`（均返回完整语义 DTO：表级 `label/description/primary_keys/foreign_keys/indexes` + 列 `name/type/label/description/synonyms/enum_values`）。
 - **权限动作**：`schema:list` / `schema:read` / `query:run` / `policy:read|validate|publish|rollback`。
-- **错误结构**：`run_query` / `get_schema` 返回统一 dict；出错形如 `{"error": str, "code": str}`；查询成功含 `rows` / `columns` / `row_count` / `query_ms`。
+- **错误结构**：`run_query` / `get_schema` 与三个领域工具返回统一 dict；出错形如 `{"error": str, "code": str}`（领域工具另有 `invalid_parameter` / `unknown_domain_tool`）；查询成功含 `rows` / `columns` / `row_count` / `query_ms`。
+- **领域工具成功 DTO**：`data` / `columns` / `meta`（`tool` / `parameters` / `semantics` / `row_count` / `elapsed_seconds` / `result_bytes` / `truncated_reason`）/ `definition_version` / `policy_version` / `truncated`。
+
+### Domain Query Layer（V0.5）
+
+- 定义由服务端维护在 `configs/domain_queries.yaml`（SQL 模板 / 参数定义 / 结果契约 / 领域口径），以内容哈希生成 `definition_version` 随 DTO 返回；按 mtime + TTL 自动重载。
+- **参数绑定**：值参数（日期 / 整数 / 枚举）先做类型与范围校验，再以 `?` 占位符经数据库驱动绑定执行，值文本绝不进入 SQL；排序 / 分组 / 时间粒度等标识符只能取 `identifiers` 白名单映射的固定片段。
+- **口径显式定义**：`sales_summary`（时间粒度 / 时区 / 销售额口径 / 退款与取消不计入）、`company_ranking`（排名指标 / 时间窗口 / 并列按 company_id 升序 / limit ≤ 50）、`industry_analysis`（行业维度 / 未知行业拒绝 / 占比分母与覆盖范围）。
+- **安全一致性**：领域工具不直接访问数据库，统一经 QueryService（AST Guard / RBAC / ACL / RLS / LIMIT / 审计 / 指标），任意主体的越权与行级过滤行为与 `run_query` 完全一致。
 
 ## 模块边界与依赖方向
 
@@ -115,11 +127,12 @@ server.py（传输/组装层）
 mcp_server/（领域层）
   tools/        只做 MCP 协议转换 + 参数校验 + 授权裁剪；不做安全判定
   services/     编排（QueryService：校验→RBAC/ACL/RLS→LIMIT→执行）
+  domain/       领域查询层（QueryTemplate/QuerySpec、参数绑定、Registry、统一 DTO）
   security/     只读安全判断（AST 解析 / 策略 / 校验）；不含授权决策
   catalog/      表结构 + 语义元数据缓存；不依赖授权
   authorization/ 授权（RBAC / ACL / RLS / SQL 重写 / 策略版本发布）；不含查询执行
   auth/         认证（Principal / Token / JWT）
-  database/     连接池 + 只读执行；不含安全/授权
+  database/     连接池 + 只读执行（含驱动参数绑定）；不含安全/授权
 ```
 
 依赖方向：`agent → server(HTTP/stdio) → tools → services → security / authorization / catalog → database`。
@@ -127,8 +140,9 @@ mcp_server/（领域层）
 约束（各层"不做什么"）：
 - `agent/` 不得 import `mcp_server` 内部的 security / authorization；只经由公开的 MCP 端点和工具交互。
 - `tools/` 不实现安全判定与授权决策，只校验参数并调用下层。
+- `domain/` 只做模板渲染与 DTO 包装，不直接访问数据库；安全判定全部委托 QueryService。
 - `catalog/` 不做表/列级授权，可见性裁剪统一由 `tools/` 层依据 `authorization` 完成。
-- `database/` 不判断 SQL 是否合法，只负责执行与结果限量。
+- `database/` 不判断 SQL 是否合法，只负责执行、驱动参数绑定与结果限量。
 - 新增领域能力时，按此边界落到对应包；能力归属不清时优先 `services/` 编排、实体进 `catalog/models`。
 
 ## 快速开始
@@ -222,9 +236,15 @@ mcp_server/             Server 侧
   server.py             入口：注册工具/资源、启动传输层
   config.py             数据库连接 + 传输参数
   tools/
-    schema.py           list_tables / get_schema
+    schema.py           list_tables / get_schema / search_schema
     query.py            run_query（仅 MCP 协议转换，委托 QueryService）
+    domain.py           sales_summary / company_ranking / industry_analysis（领域工具，委托 DomainQueryService）
     policy_admin.py     策略状态、热加载、版本列表、导出与发布工具
+  domain/               V0.5 领域查询层
+    models.py           QueryTemplate / QuerySpec / ParameterSpec（模板、参数、结果契约）
+    binder.py           参数绑定：白名单内联 + 类型校验 + ? 占位符
+    registry.py         configs/domain_queries.yaml 加载与 mtime 重载
+    service.py          编排：渲染 → QueryService → 统一 DTO（data/columns/meta/版本/truncated）
   services/
     query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
   auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
@@ -241,12 +261,13 @@ mcp_server/             Server 侧
     validator.py        校验流水线 → ValidationResult（语句/表/列 ACL/JOIN 上限）
   database/
     connection.py       pymysql 连接与游标上下文
-    executor.py         只读查询执行（超时 + 行数 + 字节上限），不含安全判定
+    executor.py         只读查询执行（超时 + 行数 + 字节上限 + 驱动参数绑定），不含安全判定
   policy_admin.py       策略管理 CLI：validate/status/publish/list/export
 
 configs/security.yaml   安全策略（只读白名单/系统库/表列 Allowlist/JOIN/成本限制）
 configs/permissions.yaml 权限策略（角色、主体、表/列 ACL、行级策略）
 configs/schema_desc.yaml 业务语义元数据（表/列业务名、用途、口径、同义词、枚举）
+configs/domain_queries.yaml V0.5 领域查询定义（SQL 模板/参数/结果契约/领域口径）
 
 tests/                  单元测试（pytest）
   test_sql_parser.py    解析：拆分、分类、抽表名、标识符
@@ -260,6 +281,7 @@ tests/                  单元测试（pytest）
   test_policy_admin.py   策略管理工具权限与发布流程
   test_permission_integration.py 真实 MySQL 多主体与 CTE 集成测试
   test_schema_semantic.py  Schema Intelligence：语义加载/检索/查询模型/ACL 裁剪
+  test_domain_query.py    V0.5 领域查询：参数白名单/驱动绑定/RLS 一致性/DTO/截断超时/DB 集成
 
 scripts/                辅助脚本
   db_init.py            建库、建表、造数
@@ -281,6 +303,7 @@ python -m pytest tests/test_authorization.py -q
 # 可选：连真实数据库的集成用例（默认跳过）
 $env:RUN_DB_TESTS=1; python -m pytest tests/test_query.py -q   # PowerShell
 $env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   # 多主体验收
+$env:RUN_DB_TESTS=1; python -m pytest tests/test_domain_query.py -q            # 领域工具验收
 ```
 
 ## 生产化要点
@@ -299,6 +322,7 @@ $env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   
 - **策略生命周期**：MySQL 版本表保存 document，active 指针原子切换；查询前按 TTL 检查并支持手动强制重载
 - **连接池与 SchemaCatalog**：Business/Policy 独立连接池，SchemaCatalog 提供 TTL 缓存和表/列/主键/外键/索引接口
 - **Schema Intelligence（V0.4）**：业务语义外置在 `configs/schema_desc.yaml`（无数据库只读账号写权限依赖、纯内存加载）；`search_schema` 先过 `schema:read` 权限，再按表/列 ACL 裁剪结果——敏感列的**描述本身**也不会泄露
+- **Domain Query Layer（V0.5）**：领域工具不直接访问数据库；模板与口径外置 `configs/domain_queries.yaml`（mtime 重载 + `definition_version` 哈希）；值参数类型/范围校验后经驱动绑定，排序/分组/粒度标识符只走白名单；RLS 改写发生在统一 QueryService 内，任意主体行为与 `run_query` 一致
 - **审计**：默认 JSON 日志，可通过 `AUDIT_STORE=mysql` 写入策略库；包含 policy_version、trace_id、request_id、SQL fingerprint、耗时和结果统计
 - **运行态接口**：`/healthz`、`/readyz`、`/metrics`，支持容器探针和 Prometheus 采集
 - **优雅退出**：停止接收新请求、等待在途请求排空、关闭连接池后退出

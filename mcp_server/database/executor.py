@@ -17,6 +17,67 @@ def _row_bytes(row: dict) -> int:
     return total
 
 
+def _bind_params(sql: str, params: tuple) -> tuple[str, tuple]:
+    """把模板值占位符 ? 转为 pymysql 的 %s，并对 SQL 中其它 % 转义为 %%。
+
+    仅在带参数执行时调用（pymysql 为客户端 %-format 绑定）：
+      - ? 只出现在服务端模板的值槽位，扫描时跳过字符串字面量内的 ?；
+      - SQL 文本中的字面 %（如 DATE_FORMAT 的 '%Y-%m'）必须写成 %%，否则
+        Python %-format 会把它当作格式符而报错；
+      - 转换后 %s 数量必须与参数数量一致，不一致视为编程错误直接拒绝。
+    """
+    out: list[str] = []
+    quote: str | None = None
+    count = 0
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if quote:
+            # 字符串字面量内：? 不算占位符，但 % 仍需转义（Python %-format 不认 SQL 引号）
+            if ch == "\\" and i + 1 < n:
+                out.append(ch)
+                out.append(sql[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            if ch == "%":
+                if i + 1 < n and sql[i + 1] == "s":
+                    out.append("%s")
+                    i += 1
+                else:
+                    out.append("%%")
+            else:
+                out.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+        elif ch == "?":
+            out.append("%s")
+            count += 1
+        elif ch == "%":
+            if i + 1 < n and sql[i + 1] == "s":
+                out.append("%s")
+                i += 1
+            else:
+                out.append("%%")
+        else:
+            out.append(ch)
+        i += 1
+    bound = "".join(out)
+    if count != len(params):
+        raise ValueError(
+            "占位符数量与参数数量不一致：%d != %d" % (count, len(params))
+        )
+    if bound.count("%s") != len(params):
+        raise ValueError(
+            "SQL 中的 %s 数量与参数数量不一致（模板不得在字符串字面量中使用 %s）"
+        )
+    return bound, params
+
+
 class QueryExecutor:
     """只读数据库操作集合；不做安全校验（由 security.validator 前置完成）。"""
 
@@ -36,8 +97,9 @@ class QueryExecutor:
         max_rows: int,
         timeout_seconds: int,
         max_result_bytes: int = 0,
+        params: tuple | list | None = None,
     ) -> QueryResult:
-        """执行只读查询。
+        """执行只读查询（值参数经驱动绑定，标识符已在模板渲染期白名单内联）。
 
         设置会话级超时后执行；结果施加双限制：
           - 行数 < max_rows（fetchmany）
@@ -47,7 +109,11 @@ class QueryExecutor:
         start = time.time()
         with db_cursor() as cur:
             cur.execute("SET SESSION MAX_EXECUTION_TIME=%d" % (timeout_seconds * 1000))
-            cur.execute(sql)
+            if params:
+                sql, params = _bind_params(sql, tuple(params))
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
             fetched = cur.fetchmany(size=max_rows)
             columns = [d[0] for d in cur.description] if cur.description else []
 

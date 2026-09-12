@@ -1,18 +1,21 @@
-"""V0.4.1 对外契约锁定测试。
+"""V0.5 对外契约锁定测试。
 
-冻结 MCP Tool 清单；任何增删工具都须先走版本演进（CHANGELOG 记录）并同步更新此处。
+冻结 MCP Tool 清单；任何增删工具都须先走版本演进（README 记录）并同步更新此处。
 """
 import asyncio
 
 import pytest
 
-# 基线冻结的 10 个 MCP Tool（与 README「稳定 API 契约」保持一致）
+# 基线冻结的 13 个 MCP Tool（V0.5 新增 3 个领域查询工具，与 README「稳定 API 契约」保持一致）
 EXPECTED_TOOLS = sorted(
     {
         "list_tables",
         "get_schema",
         "search_schema",
         "run_query",
+        "sales_summary",
+        "company_ranking",
+        "industry_analysis",
         "get_policy_status",
         "reload_permission_policy",
         "validate_permission_policy",

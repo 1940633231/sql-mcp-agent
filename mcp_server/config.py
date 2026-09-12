@@ -104,6 +104,8 @@ SCHEMA_CACHE_TTL_SECONDS = int(os.getenv("SCHEMA_CACHE_TTL_SECONDS", "60"))
 SCHEMA_CACHE_MAX_ENTRIES = int(os.getenv("SCHEMA_CACHE_MAX_ENTRIES", "256"))
 # V0.4 Schema Intelligence：语义元数据文件路径（默认为 configs/schema_desc.yaml）
 SCHEMA_DESC_PATH = os.getenv("SCHEMA_DESC_PATH", "")
+# V0.5 Domain Query Layer：领域查询定义文件路径（默认为 configs/domain_queries.yaml）
+DOMAIN_QUERIES_PATH = os.getenv("DOMAIN_QUERIES_PATH", "")
 AUDIT_STORE = os.getenv("AUDIT_STORE", "log").strip().lower()
 AUDIT_REQUIRED = os.getenv("AUDIT_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 AUDIT_TABLE = "request_audit_events"

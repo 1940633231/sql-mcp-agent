@@ -1,0 +1,56 @@
+# V0.4 Schema Intelligence：业务描述与语义元数据
+# 为表/列补充业务名、用途、口径、同义词与枚举含义，供 Agent 生成 SQL 前理解语义，
+# 减少幻觉列名。纯元数据、只读内存加载，不影响数据库只读架构。
+# 表/列 name 与查询一致（大小写不敏感）；字段缺失时回退空值，不会报错。
+
+tables:
+  company:
+    label: 公司档案
+    description: 企业基础信息与经营概况，一张主数据表，涵盖公司名称、行业、总部、成立年份与员工规模。
+  sale_records:
+    label: 销售记录
+    description: 每笔销售流水，按公司与日期记录金额；可按年/季/月与公司聚合统计。
+
+columns:
+  company:
+    company_id:
+      label: 公司编号
+      synonyms: [公司ID, 企业编号, cid]
+    name:
+      label: 公司名称
+      synonyms: [公司名, 企业名称]
+    industry:
+      label: 所属行业
+      description: 主业所处行业分类（电子 / 医药 / 零售 等）。
+      enum_values:
+        - {value: 电子, label: 电子}
+        - {value: 医药, label: 医药}
+        - {value: 零售, label: 零售}
+    headquarters:
+      label: 总部所在地
+      synonyms: [总部, 总部城市]
+    founded_year:
+      label: 成立年份
+      synonyms: [成立年, 创立年份]
+      description: 公司成立的年份（INT，公元纪年）。
+    employees:
+      label: 员工规模
+      synonyms: [员工数, 职工人数]
+      description: 公司在职员工数量（人）。
+
+  sale_records:
+    id:
+      label: 记录编号
+      synonyms: [流水号, 主键]
+    company_id:
+      label: 公司编号
+      synonyms: [所属公司, 公司ID]
+      description: 关联 company.company_id 的外键，标识这笔销售属于哪家公司。
+    amount:
+      label: 销售金额
+      synonyms: [销售额, 金额, 营收]
+      description: 单笔销售额（元，DECIMAL(14,2)）。
+    record_date:
+      label: 销售日期
+      synonyms: [日期, 交易日期, 下单日期]
+      description: 单笔销售的日期（DATE），可按年/季/月聚合。

@@ -102,6 +102,8 @@ POLICY_DB_POOL_SIZE = int(os.getenv("POLICY_DB_POOL_SIZE", "2"))
 DB_POOL_PING = os.getenv("DB_POOL_PING", "true").strip().lower() in {"1", "true", "yes", "on"}
 SCHEMA_CACHE_TTL_SECONDS = int(os.getenv("SCHEMA_CACHE_TTL_SECONDS", "60"))
 SCHEMA_CACHE_MAX_ENTRIES = int(os.getenv("SCHEMA_CACHE_MAX_ENTRIES", "256"))
+# V0.4 Schema Intelligence：语义元数据文件路径（默认为 configs/schema_desc.yaml）
+SCHEMA_DESC_PATH = os.getenv("SCHEMA_DESC_PATH", "")
 AUDIT_STORE = os.getenv("AUDIT_STORE", "log").strip().lower()
 AUDIT_REQUIRED = os.getenv("AUDIT_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 AUDIT_TABLE = "request_audit_events"

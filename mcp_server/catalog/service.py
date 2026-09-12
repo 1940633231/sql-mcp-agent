@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from ..database.connection import db_cursor
 from ..security import parser
+from . import semantic
 from .models import ColumnSchema, TableSchema
 
 
@@ -48,6 +49,7 @@ class SchemaCatalog:
         self._table_hits = 0
         self._table_misses = 0
         self._lock = threading.RLock()
+        self._semantic: semantic.SemanticMetadata = semantic.load_semantics()
 
     def list_tables(self) -> list[str]:
         now = time.monotonic()
@@ -97,6 +99,14 @@ class SchemaCatalog:
     def snapshot(self) -> list[TableSchema]:
         return [self.get_table(table) for table in self.list_tables()]
 
+    def semantic_metadata(self) -> semantic.SemanticMetadata:
+        """返回内存中的语义元数据（只读访问器）。"""
+        return self._semantic
+
+    def search(self, keyword: str) -> list[semantic.SemanticHit]:
+        """轻量语义检索：委托 semantic.search_schema 在内存目录上匹配。"""
+        return semantic.search_schema(self._semantic, keyword)
+
     def invalidate(self, table_name: str | None = None) -> None:
         with self._lock:
             if table_name is None:
@@ -125,6 +135,7 @@ class SchemaCatalog:
         primary_keys = tuple(
             row["Field"] for row in rows if str(row.get("Key") or "").upper() == "PRI"
         )
+        col_meta = self._semantic.columns.get(table_name.lower(), {})
         columns = tuple(
             ColumnSchema(
                 name=str(row["Field"]),
@@ -132,9 +143,14 @@ class SchemaCatalog:
                 nullable=str(row.get("Null") or "").upper() == "YES",
                 default=row.get("Default"),
                 comment=str(row.get("Comment") or ""),
+                label=(col_meta.get(str(row["Field"]).lower()) or semantic.ColumnDesc()).label,
+                description=(col_meta.get(str(row["Field"]).lower()) or semantic.ColumnDesc()).description,
+                synonyms=(col_meta.get(str(row["Field"]).lower()) or semantic.ColumnDesc()).synonyms,
+                enum_values=(col_meta.get(str(row["Field"]).lower()) or semantic.ColumnDesc()).enum_values,
             )
             for row in rows
         )
+        table_meta = self._semantic.tables.get(table_name.lower(), semantic.TableDesc())
         indexes = tuple(
             {
                 "name": str(row.get("Key_name") or ""),
@@ -150,6 +166,8 @@ class SchemaCatalog:
             primary_keys=primary_keys,
             foreign_keys=tuple(foreign_keys),
             indexes=indexes,
+            label=table_meta.label,
+            description=table_meta.description,
         )
 
     @staticmethod

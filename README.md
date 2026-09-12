@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.3.0**；**开发中：v0.3.1 Policy Control Plane Hardening**
+> **当前版本：v0.4.0**；**新增：Schema Intelligence（业务描述 + 语义检索）**
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -16,6 +16,7 @@
 - 拦截恶意 / 危险 SQL（基于 sqlglot AST 的校验管线：只读语句白名单 + 单语句 + 表/列 Allowlist + JOIN 上限 + 系统库封禁 + 行数/字节/长度/并发成本限制；关键字黑名单仅作辅助防线）
 - 请求级权限：认证 Principal → RBAC → 表/列 ACL → Row-Level Security → SQL 重写 → 审计
 - 受限用户查询 `SELECT *` 时自动展开可见列；schema 工具与 Resource 也只返回当前主体可见的表和列
+- Schema Intelligence：为表/列补充业务名、用途、口径与同义词（外置 `configs/schema_desc.yaml`），提供轻量语义检索 `search_schema`，让 Agent 生成 SQL 前先理解字段语义、减少幻觉列名
 
 ## 架构
 
@@ -81,7 +82,8 @@ MCP 对外能力：
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
 | Tool | `list_tables` | 列出业务库所有表 |
-| Tool | `get_schema(table_name)` | 查看某张表的结构（列名/类型/可空/主键） |
+| Tool | `get_schema(table_name)` | 查看某张表的结构（列名/类型/可空/主键/业务描述） |
+| Tool | `search_schema(keyword)` | 按关键字检索表/列的业务语义（业务名/别名/同义词/描述） |
 | Tool | `run_query(sql)` | 执行只读 SQL（仅单条 SELECT），返回行数据 |
 | Tool | `get_policy_status()` | 查看 active 权限策略版本与来源 |
 | Tool | `reload_permission_policy()` | 强制热重载策略 |
@@ -190,6 +192,7 @@ mcp_server/             Server 侧
     query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
   auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
   catalog/               SchemaCatalog：表/列/键/索引缓存
+                        + semantic.py：业务描述加载与轻量语义检索
   observability/         Trace ID / Audit sink / Metrics / Health / Lifecycle
   authorization/         授权：RBAC / ACL / 列可见性 / RLS / SQL 策略改写 / 审计
                         + Schema/Semantic/Security Validator / Policy DB / 事务发布
@@ -206,6 +209,7 @@ mcp_server/             Server 侧
 
 configs/security.yaml   安全策略（只读白名单/系统库/表列 Allowlist/JOIN/成本限制）
 configs/permissions.yaml 权限策略（角色、主体、表/列 ACL、行级策略）
+configs/schema_desc.yaml 业务语义元数据（表/列业务名、用途、口径、同义词、枚举）
 
 tests/                  单元测试（pytest）
   test_sql_parser.py    解析：拆分、分类、抽表名、标识符
@@ -218,6 +222,7 @@ tests/                  单元测试（pytest）
   test_policy_db.py      策略库连接隔离与事务边界
   test_policy_admin.py   策略管理工具权限与发布流程
   test_permission_integration.py 真实 MySQL 多主体与 CTE 集成测试
+  test_schema_semantic.py  Schema Intelligence：语义加载/检索/查询模型/ACL 裁剪
 
 scripts/                辅助脚本
   db_init.py            建库、建表、造数
@@ -256,6 +261,7 @@ $env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   
 - **版本注意**：本项目用 mcp **2.x** 的 `MCPServer`（v1 的 `FastMCP` 已改名，勿用旧教程 API）
 - **策略生命周期**：MySQL 版本表保存 document，active 指针原子切换；查询前按 TTL 检查并支持手动强制重载
 - **连接池与 SchemaCatalog**：Business/Policy 独立连接池，SchemaCatalog 提供 TTL 缓存和表/列/主键/外键/索引接口
+- **Schema Intelligence（V0.4）**：业务语义外置在 `configs/schema_desc.yaml`（无数据库只读账号写权限依赖、纯内存加载）；`search_schema` 先过 `schema:read` 权限，再按表/列 ACL 裁剪结果——敏感列的**描述本身**也不会泄露
 - **审计**：默认 JSON 日志，可通过 `AUDIT_STORE=mysql` 写入策略库；包含 policy_version、trace_id、request_id、SQL fingerprint、耗时和结果统计
 - **运行态接口**：`/healthz`、`/readyz`、`/metrics`，支持容器探针和 Prometheus 采集
 - **优雅退出**：停止接收新请求、等待在途请求排空、关闭连接池后退出

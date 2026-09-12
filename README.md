@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.4.0**；**新增：Schema Intelligence（业务描述 + 语义检索）**
+> **当前版本：v0.4.1（基线冻结版）**；V0.4 Schema Intelligence + 契约锁定 + CI
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -93,6 +93,43 @@ MCP 对外能力：
 | Tool | `export_permission_policy()` | 导出当前策略 |
 | Resource | `database://schema` | 全库各表完整结构 DTO（含表描述/键/外键/索引/枚举，应用预取，省钱省轮次） |
 | Resource | `database://table/{table_name}` | 单表完整结构 DTO（URI 模板资源） |
+
+## 稳定 API 契约（V0.4.1）
+
+以下对外接口为 **v0.4.1 基线冻结**，任何增删改须显式走版本演进（`CHANGELOG.md` 记录）。`tests/test_api_contract.py` 锁定 Tool 清单，改动即回归失败。
+
+- **Tool（10 个）**：`list_tables` / `get_schema(table_name)` / `search_schema(keyword, deep=false)` / `run_query(sql)` / `get_policy_status` / `reload_permission_policy` / `validate_permission_policy(document)` / `publish_permission_policy(document, expected_version)` / `list_permission_policy_versions(limit)` / `export_permission_policy`。
+- **Resource（2 个）**：`database://schema`、`database://table/{table_name}`（均返回完整语义 DTO：表级 `label/description/primary_keys/foreign_keys/indexes` + 列 `name/type/label/description/synonyms/enum_values`）。
+- **权限动作**：`schema:list` / `schema:read` / `query:run` / `policy:read|validate|publish|rollback`。
+- **错误结构**：`run_query` / `get_schema` 返回统一 dict；出错形如 `{"error": str, "code": str}`；查询成功含 `rows` / `columns` / `row_count` / `query_ms`。
+
+## 模块边界与依赖方向
+
+三层划分明确所属，避免能力重复实现：
+
+```text
+agent/（LLM 编排层）
+  └─ 提示 / 工具发现 / function-calling 主循环；唯一 MCP 客户端入口；不做 SQL 安全与授权
+server.py（传输/组装层）
+  └─ 组装 MCPServer：工具注册、Resource、HTTP/stdio、探针；不实现任何业务判定
+mcp_server/（领域层）
+  tools/        只做 MCP 协议转换 + 参数校验 + 授权裁剪；不做安全判定
+  services/     编排（QueryService：校验→RBAC/ACL/RLS→LIMIT→执行）
+  security/     只读安全判断（AST 解析 / 策略 / 校验）；不含授权决策
+  catalog/      表结构 + 语义元数据缓存；不依赖授权
+  authorization/ 授权（RBAC / ACL / RLS / SQL 重写 / 策略版本发布）；不含查询执行
+  auth/         认证（Principal / Token / JWT）
+  database/     连接池 + 只读执行；不含安全/授权
+```
+
+依赖方向：`agent → server(HTTP/stdio) → tools → services → security / authorization / catalog → database`。
+
+约束（各层"不做什么"）：
+- `agent/` 不得 import `mcp_server` 内部的 security / authorization；只经由公开的 MCP 端点和工具交互。
+- `tools/` 不实现安全判定与授权决策，只校验参数并调用下层。
+- `catalog/` 不做表/列级授权，可见性裁剪统一由 `tools/` 层依据 `authorization` 完成。
+- `database/` 不判断 SQL 是否合法，只负责执行与结果限量。
+- 新增领域能力时，按此边界落到对应包；能力归属不清时优先 `services/` 编排、实体进 `catalog/models`。
 
 ## 快速开始
 

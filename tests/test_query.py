@@ -131,6 +131,32 @@ class TestResultShape:
         result = service.run("SELECT foo FROM company")
         assert "error" in result
 
+    def test_database_error_now_carries_stable_code(self, service, monkeypatch):
+        """数据库异常须带稳定 code，供 Agent 判读而非猜文本。"""
+        def fake_run(sql, max_rows, timeout_seconds, max_result_bytes=None):
+            raise pymysql.err.ProgrammingError(1054, "Unknown column 'foo'")
+
+        monkeypatch.setattr(service.executor, "run", fake_run)
+        result = service.run("SELECT * FROM company")
+        assert result.get("code") == "query_error"
+
+    def test_database_mysql_3024_maps_to_query_timeout(self, service, monkeypatch):
+        """MySQL 3024（Statement exceeded execution time）应映射为 query_timeout，而非默认可修复。"""
+        def fake_run(sql, max_rows, timeout_seconds, max_result_bytes=None):
+            raise pymysql.err.OperationalError(
+                3024, "Statement exceeded execution time")
+
+        monkeypatch.setattr(service.executor, "run", fake_run)
+        result = service.run("SELECT * FROM company")
+        assert result.get("code") == "query_timeout"
+
+    def test_classify_db_error_heuristics(self):
+        from mcp_server.services.query_service import _classify_db_error
+        assert _classify_db_error(pymysql.err.OperationalError(3024, "stmt exceeded")) == "query_timeout"
+        assert _classify_db_error(RuntimeError("Lock wait timeout exceeded")) == "query_timeout"
+        assert _classify_db_error(RuntimeError("something totally unknown")) == "query_error"
+        assert _classify_db_error(Exception("no args, plain message")) == "query_error"
+
 
 class TestToolThin:
     """Tool 层只做协议转换：直接委托 QueryService，不含安全/执行逻辑。"""

@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.5.0（领域查询层）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer
+> **当前版本：v0.6.0（Agent Reliability）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 
@@ -18,6 +18,7 @@
 - 受限用户查询 `SELECT *` 时自动展开可见列；schema 工具与 Resource 也只返回当前主体可见的表和列
 - Schema Intelligence：为表/列补充业务名、用途、口径与同义词（外置 `configs/schema_desc.yaml`），提供轻量语义检索 `search_schema`，让 Agent 生成 SQL 前先理解字段语义、减少幻觉列名
 - Domain Query Layer（V0.5）：`sales_summary` / `company_ranking` / `industry_analysis` 三个领域工具，模板与领域口径由服务端维护（`configs/domain_queries.yaml`），值参数经数据库驱动绑定、排序/分组/时间粒度等标识符只能取白名单；Agent 优先调用领域工具，复杂问题才回退 `run_query`
+- Agent Reliability（V0.6）：`AsyncOpenAI` + 连接/读取/单次调用超时 + 全局请求截止时间；临时错误退避重试（仅只读调用）、永久错误立即终止；统一预算（迭代/工具调用/SQL修复/Token/费用上限）杜绝无限循环与无限等待；SQL 修复仅针对语法/字段错误，权限/超时/危险 SQL 不进入盲重试；每次结束都返回稳定错误码（`success`/`timeout`/`model_error`/`tool_error`/`sql_syntax_error`/`permission_denied`/`budget_exceeded`）与用户可理解信息及运行指标（迭代数/工具调用数/修复次数/耗时/最终状态）
 
 ## 架构
 

@@ -63,8 +63,14 @@ async def dialog_case(case):
     print("-" * 70)
     agent = SQLAgent(verbose=True)
     try:
-        answer = await agent.run(question)
-        print(f"\n  最终答案：{answer}")
+        result = await agent.run(question)
+        print(f"\n  最终答案：{result.answer}")
+        if result.status.value != "success":
+            print(f"  [状态] {result.status.value}：{result.error_message}")
+        print(f"  [指标] 迭代={result.iteration_count} "
+              f"工具调用={result.tool_call_count} "
+              f"SQL修复={result.repair_count} "
+              f"耗时={result.elapsed_seconds:.2f}s")
     except Exception as e:
         print(f"\n  [异常] {type(e).__name__}: {e}")
 

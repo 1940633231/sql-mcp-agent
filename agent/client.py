@@ -3,14 +3,27 @@
 - mcp_session     连接 MCP Server 并完成握手，产出可用的 ClientSession
 - to_openai_tool  MCP 工具定义 -> OpenAI tool schema
 - extract_result  从 MCP 调用结果中取出可喂回 LLM 的文本
+
+V0.6：连接 / 读取超时由 http_client 的 httpx 超时施加（连接、读、写、连接池）。
 """
 import json
 from contextlib import asynccontextmanager
 
+import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from . import config
+
+
+def _http_timeout() -> httpx2.Timeout:
+    """把连接 / 读 / 写 / 连接池超时包装为 httpx 超时对象。"""
+    return httpx2.Timeout(
+        connect=config.MCP_CONNECT_TIMEOUT_SECONDS,
+        read=config.MCP_CALL_TIMEOUT_SECONDS,
+        write=config.MCP_CALL_TIMEOUT_SECONDS,
+        pool=config.MCP_CONNECT_TIMEOUT_SECONDS,
+    )
 
 
 @asynccontextmanager
@@ -19,7 +32,10 @@ async def mcp_session(url: str | None = None):
     headers = {}
     if config.MCP_AUTH_TOKEN:
         headers["Authorization"] = "Bearer %s" % config.MCP_AUTH_TOKEN
-    http_client = create_mcp_http_client(headers=headers or None)
+    http_client = create_mcp_http_client(
+        headers=headers or None,
+        timeout=_http_timeout(),
+    )
     async with http_client:
         async with streamable_http_client(
             url or config.mcp_url(), http_client=http_client

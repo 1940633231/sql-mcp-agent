@@ -116,9 +116,11 @@ class QueryService:
             finally:
                 self._semaphore.release()
         except Exception as e:
-            # Database 层抛出的 MySQLError 等统一收敛为错误结构，不向 Tool 层上抛
+            # Database 层抛出的 MySQLError 等统一收敛为错误结构并携带稳定 code，不向 Tool 层上抛。
+            # MySQL 3024（Statement exceeded execution time）等超时显式映射为 query_timeout，
+            # 其余数据库错误归为 query_error，保证 Agent 侧能稳定判读而非按文本猜。
             metrics.inc("query_executions_total", {"status": "error"})
-            return {"error": str(e)}
+            return {"error": str(e), "code": _classify_db_error(e)}
         guard_error = _result_column_guard(query_result.columns, authorized.result_columns)
         if guard_error:
             log_event(
@@ -185,3 +187,34 @@ def _result_column_guard(actual_columns: list[str], allowed_columns: tuple[str, 
 
 def _normalize_result_name(value: str) -> str:
     return " ".join((value or "").strip().lower().split())
+
+
+# DB 执行错误 -> 稳定 code 的判定：先看 errno，再看错误文本特征。
+# 关键：超时（3024 / Lock wait / timed out）必须映射为 query_timeout，
+# 其余未知错误归为 query_error —— 让 Agent 端以稳定 code 判读，而不是猜测文本。
+_DB_TIMEOUT_ERRNOS = frozenset({3024})
+_DB_TIMEOUT_TEXT_MARKERS = (
+    "exceeded execution time",
+    "statement exceeded",
+    "max_execution_time",
+    "lock wait timeout",
+    "timed out",
+    "query timeout",
+    "操作超时",
+    "查询超时",
+)
+
+
+def _classify_db_error(exc) -> str:
+    """把数据库层异常映射为稳定错误码（query_timeout / query_error）。"""
+    errno = None
+    try:
+        errno = int(exc.args[0])
+    except (TypeError, ValueError, IndexError, AttributeError):
+        errno = None
+    if errno in _DB_TIMEOUT_ERRNOS:
+        return "query_timeout"
+    low = str(exc).lower()
+    if any(marker in low for marker in _DB_TIMEOUT_TEXT_MARKERS):
+        return "query_timeout"
+    return "query_error"

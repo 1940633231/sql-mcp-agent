@@ -7,6 +7,30 @@
 
 （暂无）
 
+## [v0.6.0] - 2026-09-12
+
+### Added
+- **Agent Reliability（V0.6）**：让 Agent 在模型异常、工具失败与 SQL 错误下仍能可控结束。
+- `agent/reliability.py`：稳定错误码（`success`/`timeout`/`model_error`/`tool_error`/`sql_syntax_error`/`permission_denied`/`budget_exceeded`）、错误分类（临时/可修复SQL/权限/超时/危险）、指数退避+抖动重试、统一预算（迭代/工具调用/SQL修复/Token/费用）、全局请求截止时间与 `RunResult`（答案+状态+指标）。
+- `agent/`：同步 `OpenAI` 替换为 `AsyncOpenAI`；LLM 与 MCP 调用均含连接/读取/单次调用超时；临时错误退避重试、永久错误立即终止；SQL Repair 仅修复语法/字段错误，权限/超时/危险 SQL 不进入盲重试；每次结束返回稳定错误码与用户可理解信息。
+- `tests/test_agent_reliability.py`：端到端评测集（正确性/工具选择/修复次数/超限退出/错误提示），无需真实 LLM 与 MCP Server，用 fake responder + fake session 驱动。
+- `requirements.txt`：显式声明直接导入的 `httpx2==2.12.0`，不再依赖 mcp/openai 的传递引入。
+
+### Fixed（评审回修，承接 V0.6）
+- 真正的 SQL 语法错误（服务器 `parse_error`）不再被误判为权限拒绝，正确进入 SQL Repair。
+- 全局 Request Deadline 改为硬上限：LLM 每次尝试、上下文获取都按剩余时长压缩单次调用超时。
+- 工具调用预算修正 off-by-one：恰好执行 `MAX_TOOL_CALLS` 次后第 `N+1` 次才超限退出。
+- 尊重 MCP `CallToolResult.is_error`，即便无标准错误结构也按错误分类处理。
+- `AsyncOpenAI` 真正配置 connect/read/write/pool 四类超时。
+- 成功结果不再携带 `error_message`。
+- `scripts/batch_test.py` 适配 `run()` 返回 `RunResult` 的新契约。
+- 新增 `.env.example`：覆盖 Agent V0.6 可靠性相关环境变量与默认值说明。
+- 工具重试限制为显式 `RETRY_SAFE_TOOLS` 白名单：仅白名单内只读工具在临时错误时退避重试；非白名单工具至多执行一次（失败即终止），杜绝 `publish_permission_policy` 等有副作用工具被重复提交。
+- 新增 `BLOCKED_TOOLS`：发现阶段即从工具清单剔除 `publish_permission_policy`/`reload_permission_policy`，运行时再拦截（纵深防御），避免 Agent 调用服务端管理操作。
+- MySQL 执行超时（3024）此前文本 `Statement exceeded execution time` 不匹配超时特征、被误判为可修复 SQL 消耗修复预算；现 **Server 侧**将数据库异常映射为稳定 code（超时→`query_timeout`、未知→`query_error`），**Agent 侧**新增 `query_timeout` 码识别、补齐超时文本特征，并把无法归类的错误默认降级为 `FATAL_TOOL`（立即终止）而非默认可修复。
+- 全局 Deadline 进一步收紧为硬上限：`run()` 外层用统一的 `asyncio.timeout(REQUEST_DEADLINE_SECONDS)` 包住 MCP 建连 + `initialize` + 上下文读取 + 全循环；`asyncio.TimeoutError` 现统一收敛为 `TIMEOUT`（带明确信息），不再落入通用 `TOOL_ERROR`/空 `error_message`。
+- `.env.example` 补全为覆盖 `agent/config.py` 与 `mcp_server/config.py` 全部 `os.getenv` 变量的全量模板（75 项）：新增 `AUTH_JWT_*`、`AUTH_PRINCIPAL_MODE`、`POLICY_DB_*`、`AUDIT_*`、`SCHEMA_*`、`DOMAIN_QUERIES_PATH` 及连接池/优雅退出配置；`AUTH_TOKENS_JSON` 样例改为合法 JSON（默认注释，验证可解析）；`LLM_API_KEY` 占位符改为含「填入」字样，确保 `SQLAgent` 未配置校验能被提前触发。
+
 ## [v0.4.1] - 2026-09-12（基线冻结）
 
 ### Changed

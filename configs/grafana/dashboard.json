@@ -23,7 +23,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "sum(rate(query_errors_total[5m])) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001)",
+        {"expr": "(sum(rate(query_errors_total[5m])) or vector(0)) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001)",
          "legendFormat": "错误率", "refId": "A"}
       ],
       "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
@@ -61,7 +61,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "sum(rate(query_errors_total{code=\"query_timeout\"}[5m])) / clamp_min(sum(rate(query_errors_total[5m])), 0.0001)",
+        {"expr": "(sum(rate(query_errors_total{code=\"query_timeout\"}[5m])) or vector(0)) / clamp_min(sum(rate(query_errors_total[5m])), 0.0001)",
          "legendFormat": "超时率", "refId": "A"}
       ],
       "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
@@ -73,7 +73,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "(sum(rate(mcp_requests_total{status=\"error\"}[5m])) + sum(rate(tool_business_errors_total[5m]))) / clamp_min(sum(rate(mcp_requests_total[5m])), 0.0001)",
+        {"expr": "((sum(rate(mcp_requests_total{status=\"error\"}[5m])) or vector(0)) + (sum(rate(tool_business_errors_total[5m])) or vector(0))) / clamp_min(sum(rate(mcp_requests_total[5m])), 0.0001)",
          "legendFormat": "工具失败率", "refId": "A"}
       ],
       "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},

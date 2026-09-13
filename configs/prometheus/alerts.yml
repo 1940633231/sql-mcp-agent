@@ -4,7 +4,7 @@ groups:
   - name: sql_mcp_observability
     rules:
       - alert: SQLMCPErrorRateHigh
-        expr: sum(rate(query_errors_total[5m])) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001) > 0.05
+        expr: ((sum(rate(query_errors_total[5m])) or vector(0)) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001)) > 0.05
         for: 2m
         labels:
           severity: warning
@@ -13,7 +13,7 @@ groups:
           description: "当前错误率 {{ $value | humanizePercentage }}（5m 窗口）。"
 
       - alert: SQLMCPErrorRateCritical
-        expr: sum(rate(query_errors_total[5m])) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001) > 0.20
+        expr: ((sum(rate(query_errors_total[5m])) or vector(0)) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001)) > 0.20
         for: 2m
         labels:
           severity: critical
@@ -40,7 +40,7 @@ groups:
           description: "当前 P99 = {{ $value }}s（5m 窗口）。"
 
       - alert: SQLMCPTimeoutRateHigh
-        expr: sum(rate(query_errors_total{code="query_timeout"}[5m])) / clamp_min(sum(rate(query_errors_total[5m])), 0.0001) > 0.30
+        expr: ((sum(rate(query_errors_total{code="query_timeout"}[5m])) or vector(0)) / clamp_min(sum(rate(query_errors_total[5m])), 0.0001)) > 0.30
         for: 2m
         labels:
           severity: warning
@@ -49,7 +49,7 @@ groups:
           description: "当前超时占错误比例 = {{ $value | humanizePercentage }}。"
 
       - alert: SQLMCPToolFailureRateHigh
-        expr: (sum(rate(mcp_requests_total{status="error"}[5m])) + sum(rate(tool_business_errors_total[5m]))) / clamp_min(sum(rate(mcp_requests_total[5m])), 0.0001) > 0.10
+        expr: (((sum(rate(mcp_requests_total{status="error"}[5m])) or vector(0)) + (sum(rate(tool_business_errors_total[5m])) or vector(0))) / clamp_min(sum(rate(mcp_requests_total[5m])), 0.0001)) > 0.10
         for: 2m
         labels:
           severity: warning

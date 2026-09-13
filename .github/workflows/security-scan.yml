@@ -21,7 +21,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
-        # 无容器镜像，扫描整个仓库文件系统 + Pip 依赖清单
+        # 无容器镜像，扫描依赖漏洞（requirements.txt 之类）；显式只开 vuln scanner，
+        # 关闭 secret 扫描：.env 已 gitignore，.env.example 是公开占位模板，secret 扫描必然误报。
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -29,6 +30,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          scanners: vuln
           exit-code: "1"
 
       - name: Upload Trivy scan results to GitHub Security tab

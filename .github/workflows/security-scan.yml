@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Trivy vulnerability scanner
         # 无容器镜像，扫描依赖漏洞（requirements.txt 之类）；显式只开 vuln scanner，

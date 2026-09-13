@@ -68,7 +68,7 @@ def _split_counter(key: str) -> tuple[str, dict]:
 
 
 class AlertEngine:
-    def __init__(self, interval_seconds: float | None = None):
+    def __init__(self, interval_seconds: float | None = None, clock=None):
         self._interval = interval_seconds or config.ALERT_EVAL_SECONDS
         self._rules = _load_rules(config.ALERT_RULES_PATH)
         self._prev: dict = {}
@@ -77,6 +77,8 @@ class AlertEngine:
         self._lock = threading.Lock()
         self._last_eval: float = 0.0
         self._last_signals: dict = {}
+        # 可注入时钟，便于测试精确驱动 pending -> firing -> resolved 状态迁移。
+        self._clock = clock or time.time
 
     def start(self) -> None:
         thread = threading.Thread(
@@ -168,38 +170,50 @@ class AlertEngine:
         signal = signals.get(rule.get("signal"))
         threshold = rule.get("threshold", 0.0)
         op = rule.get("op", ">")
+        for_seconds = rule.get("for", 60)
+        now = self._clock()
         firing = False
         if signal is not None:
             firing = (signal > threshold) if op == ">" else (signal < threshold)
+
         state = self._states.get(name)
         if state is None:
-            state = {"name": name, "signal": rule.get("signal"),
-                     "severity": rule.get("severity", "warning"),
-                     "threshold": threshold, "status": "pending",
-                     "started": time.time(), "fired_at": None,
-                     "last_value": signal, "for_seconds": rule.get("for", 60)}
+            # 首次进入 pending 时记录 pending_since，供持续达到 for 窗口后 firing。
+            state = {
+                "name": name, "signal": rule.get("signal"),
+                "severity": rule.get("severity", "warning"),
+                "threshold": threshold, "status": "pending",
+                "started": now, "pending_since": now,
+                "fired_at": None, "resolved_at": None,
+                "last_value": signal, "for_seconds": for_seconds,
+            }
             self._states[name] = state
         state["last_value"] = signal
+
         if firing:
+            if state["status"] == "resolved":
+                # 曾恢复后再触发：重新开启 pending 计时窗口。
+                state["status"] = "pending"
+                state["pending_since"] = now
             if state["status"] == "pending":
-                if time.time() - state.get("_pending_since", time.time()) >= state["for_seconds"]:
+                if now - state["pending_since"] >= state["for_seconds"]:
                     state["status"] = "firing"
-                    state["fired_at"] = time.time()
+                    state["fired_at"] = now
                     logger.warning(
-                        "ALERT %s (%s) firing: %s=%s > %s",
-                        name, state["severity"], state["signal"], signal, state["threshold"],
+                        "ALERT %s (%s) firing: %s=%s %s %s",
+                        name, state["severity"], state["signal"],
+                        signal, op, state["threshold"],
                     )
-            else:
-                state.setdefault("_pending_since", time.time())
+            # 已是 firing：保持，不再重复告警。
         else:
             if state["status"] == "firing":
                 state["status"] = "resolved"
+                state["resolved_at"] = now
                 logger.info("ALERT %s resolved", name)
-            elif state["status"] == "resolved":
-                pass
-            else:
-                state["status"] = "pending"
-            state["_pending_since"] = time.time()
+            elif state["status"] == "pending":
+                # 未到 firing 就恢复：pending_since 顺延，保持绿色并清空累计窗口。
+                state["pending_since"] = now
+            # resolved（已恢复）保持 resolved，直到再次触发
 
     def overview(self) -> dict:
         with self._lock:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import queue
 import secrets
 import threading
 import time
@@ -37,6 +38,8 @@ __all__ = [
     "parse_traceparent",
     "build_traceparent",
     "trace_context_from_traceparent",
+    "start_exporter",
+    "flush_exporter",
 ]
 
 OTEL_ENDPOINT = os.getenv("OTEL_OTLP_HTTP_ENDPOINT", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")).rstrip("/")
@@ -79,6 +82,8 @@ class Span:
     status_message: str = ""
     attributes: dict = field(default_factory=dict)
     events: list = field(default_factory=list)
+    # True=纳入采样并落地/导出；False=裁剪采样，仅作 trace 血缘传播（不记不导）。
+    recording: bool = True
 
     @property
     def duration_ns(self) -> int:
@@ -212,21 +217,37 @@ def _span_to_otlp(payload: dict) -> dict:
 
 _EXPORTER_THREAD = None
 _EXPORTER_SENT_COUNTER = 0
+# 已完成的 Span 的导出队列：worker 消费即出队，绝不重复导出同一批。
+_EXPORT_QUEUE: "queue.Queue[Span]" = queue.Queue(maxsize=10000)
 
 
-def _exporter_worker(buffer: SpanBuffer, endpoint: str) -> None:
-    """定时把内存缓冲里的 spans 批量导出到 OTLP/HTTP（JSON）。"""
+def _drain_export_queue() -> list[Span]:
+    items: list[Span] = []
+    try:
+        while True:
+            items.append(_EXPORT_QUEUE.get_nowait())
+    except queue.Empty:
+        return items
+
+
+def _exporter_worker(endpoint: str) -> None:
+    """定时消费导出队列，把已完成的 spans 批量投递到 OTLP/HTTP（JSON）。"""
     batch_seconds = float(os.getenv("OTEL_EXPORTER_BATCH_SECONDS", "5.0"))
     while True:
         time.sleep(batch_seconds)
-        payload = buffer.snapshot()
-        if not payload:
+        items = _drain_export_queue()
+        if not items:
             continue
-        merged = {}
-        for item in payload:
-            merged.setdefault(item["trace_id"], []).append(item)
-        for trace_id, spans in merged.items():
-            _post_otlp(trace_id, spans, endpoint)
+        _post_batch(items, endpoint)
+
+
+def _post_batch(spans: list[Span], endpoint: str) -> None:
+    payload = [_span_payload(s) for s in spans]
+    merged: dict[str, list[dict]] = {}
+    for item in payload:
+        merged.setdefault(item["trace_id"], []).append(item)
+    for trace_id, group in merged.items():
+        _post_otlp(trace_id, group, endpoint)
 
 
 def _post_otlp(trace_id: str, spans: list[dict], endpoint: str) -> None:
@@ -312,23 +333,40 @@ class Tracer:
         parent: Span | SpanContext | None = "auto",
         attributes: dict | None = None,
     ) -> Span:
-        """开启一个新 span。parent 缺省按 当前 span → 新建 root trace 解析。"""
+        """开启一个新 span。parent 缺省按 当前 span → 新建 root trace 解析。
+
+        采样决定在创建时落定：未采样（recording=False）的 span 只做 trace 血缘
+        传播（child 继续沿用同一 trace_id），不写入缓冲、也不进入导出队列。
+        """
         trace_id, parent_span_id, flag = self._resolve_parent(parent)
         if not trace_id:
             trace_id = self.new_trace_id()
+        sample_flag = _sample_flag(flag)
         span = Span(
             name=name,
             kind=kind,
             context=SpanContext(
                 trace_id=trace_id,
                 span_id=self.new_span_id(),
-                trace_flags=_sample_flag(flag),
+                trace_flags=sample_flag,
             ),
             parent_span_id=parent_span_id,
             start_ns=self.now_ns(),
             attributes=dict(attributes or {}),
+            recording=(sample_flag == "01"),
         )
         return span
+
+    def _record(self, span: Span) -> None:
+        """记录一个完成 span：采样认为不记录时不落地不导出。"""
+        if not span.recording:
+            return
+        self._buffer.add(span)
+        if _EXPORTER_THREAD is not None:
+            try:
+                _EXPORT_QUEUE.put_nowait(span)
+            except queue.Full:
+                pass  # 队列有界：导出慢时不阻塞业务，直接丢弃最旧批次
 
     @contextmanager
     def span(self, name, *, kind=SpanKind.INTERNAL, parent="auto", attributes=None):
@@ -343,7 +381,7 @@ class Tracer:
         finally:
             span.end_ns = self.now_ns()
             span.attributes.update({"duration_ms": span.duration_ms()})
-            self._buffer.add(span)
+            self._record(span)
             self._current.reset(token)
 
     def end(self, span: Span, status: str = "ok", message: str = "", attributes: dict | None = None):
@@ -358,8 +396,15 @@ class Tracer:
         else:
             span.status = "ok"
         span.attributes.update({"duration_ms": span.duration_ms()})
-        self._buffer.add(span)
+        self._record(span)
         return span
+
+    def set_current(self, span: Span):
+        """把 span 设为当前（返回 token，完成后需 restore），供显式根链路使用。"""
+        return self._current.set(span)
+
+    def restore(self, token) -> None:
+        self._current.reset(token)
 
     def attach_remote_parent(self, ctx: SpanContext) -> None:
         """把远端传入的 SpanContext 作为隐式父级挂到当前上下文。"""
@@ -408,9 +453,19 @@ def start_exporter(endpoint: str | None = None) -> None:
         return
     thread = threading.Thread(
         target=_exporter_worker,
-        args=(tracer.buffer, endpoint),
+        args=(endpoint,),
         daemon=True,
         name="otel-exporter",
     )
     _EXPORTER_THREAD = thread
     thread.start()
+
+
+def flush_exporter(endpoint: str | None = None) -> None:
+    """同步把导出队列里的 Span 立即投递（供 CLI 退出前兜底，避免 daemon 线程丢失）。"""
+    endpoint = (endpoint or OTEL_ENDPOINT).rstrip("/")
+    if _EXPORTER_THREAD is None or not endpoint:
+        return
+    items = _drain_export_queue()
+    if items:
+        _post_batch(items, endpoint)

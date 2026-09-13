@@ -29,7 +29,7 @@ import httpx2
 import openai
 from openai import AsyncOpenAI
 
-from telemetry import SpanKind, tracer
+from telemetry import SpanKind, tracer, start_exporter, flush_exporter
 
 from . import config
 from .client import extract_result, mcp_session, to_openai_tool
@@ -451,10 +451,13 @@ class SQLAgent:
         """
         started = time.monotonic()
         # V0.7：Agent 层根 Span；不记录完整问题（标签卫生，只留长度与指纹）。
+        # 必须 set_current 让 _call_llm/_invoke_tool 的 child span 与 client.py 的
+        # traceparent 注入都落在同一 trace_id 下。
         root_span = tracer.start(
             "agent.run", kind=SpanKind.SERVER,
             attributes={"question_len": len(question), "model": config.LLM_MODEL},
         )
+        _root_token = tracer.set_current(root_span)
         deadline = make_deadline(config.REQUEST_DEADLINE_SECONDS)
         budget = Budget(
             max_iterations=config.LLM_MAX_TOOL_ITERATIONS,
@@ -525,6 +528,7 @@ class SQLAgent:
                     "duration_ms": round(result.elapsed_seconds * 1000, 3),
                 },
             )
+            tracer.restore(_root_token)
         return result
 
 
@@ -548,9 +552,11 @@ async def main() -> None:
     if len(args) < 1:
         print('用法: python -m agent.agent "你想查询的问题" [--trace]')
         return
+    start_exporter()  # Agent 独立进程也启动 OTLP 导出
     agent = SQLAgent(verbose=verbose)
     result = await agent.run(args[0])
     print(_render_result(result))
+    flush_exporter()  # CLI 退出前把队列里的 Span 兜底导出
 
 
 if __name__ == "__main__":

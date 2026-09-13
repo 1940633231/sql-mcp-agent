@@ -1,5 +1,7 @@
 """V0.7 Observability Hardening：有界直方图、标签卫生、traceparent/span、告警、审计。"""
 
+import pytest
+
 from mcp_server.observability.metrics import Metrics
 from mcp_server.observability.context import TraceContext, set_trace_context, reset_trace_context
 from mcp_server.observability import tracing
@@ -138,3 +140,139 @@ def test_request_maps_request_id_and_trace_id():
         tracing.tracer.end(span)
     finally:
         reset_trace_context(token)
+
+
+# ---------------- 7. 告警：可控时钟的 pending -> firing -> resolved ----------------
+class _FakeClock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
+
+
+def test_alert_rule_reaches_firing_and_resolved(monkeypatch):
+    from mcp_server.observability import alerts as alerts_mod
+    from mcp_server.observability.metrics import metrics as m
+
+    clock = _FakeClock()
+    engine = alerts_mod.AlertEngine(interval_seconds=60, clock=clock)
+    err = {"code": "query_error", "tool": "run_query", "principal": "query"}
+
+    def breach():
+        m.inc("query_executions_total", {}, 1)
+        m.inc("query_errors_total", err, 1)
+
+    # 第 1 次：触发条件为真，规则进入 pending（记录 pending_since）
+    breach()
+    states = {r["name"]: r for r in engine.evaluate()["rules"]}
+    assert states["error_rate_high"]["status"] == "pending"
+
+    # 未达 for=60：仍 pending
+    clock.advance(10)
+    breach()
+    states = {r["name"]: r for r in engine.evaluate()["rules"]}
+    assert states["error_rate_high"]["status"] == "pending"
+
+    # 累计达 60s：firing
+    clock.advance(50)
+    breach()
+    states = {r["name"]: r for r in engine.evaluate()["rules"]}
+    assert states["error_rate_high"]["status"] == "firing"
+
+    # 保持 firing 不重复
+    clock.advance(1)
+    breach()
+    states = {r["name"]: r for r in engine.evaluate()["rules"]}
+    assert states["error_rate_high"]["status"] == "firing"
+
+    # 条件恢复：firing -> resolved
+    clock.advance(1)
+    states = {r["name"]: r for r in engine.evaluate()["rules"]}
+    assert states["error_rate_high"]["status"] == "resolved"
+
+
+# ---------------- 8. 采样：未采样不再记录/导出，导出队列不重复 ----------------
+def test_sampling_ratio_zero_stops_recording(monkeypatch):
+    import telemetry as telem
+    monkeypatch.setattr(telem, "OTEL_SAMPLE_RATIO", 0.0)
+    before = len(telem.tracer.buffer.snapshot())
+    span = telem.tracer.start("unsampled.span")
+    assert span.recording is False
+    telem.tracer.end(span)
+    # 未采样：不进入查看缓冲，也不进入导出队列
+    assert len(telem.tracer.buffer.snapshot()) == before
+    assert telem._EXPORT_QUEUE.empty()
+
+
+def test_export_queue_is_consumed_not_resent(monkeypatch):
+    import telemetry as telem
+    monkeypatch.setattr(telem, "OTEL_SAMPLE_RATIO", 1.0)
+    # 模拟 exporter 已启动，使 _record 把 span 写入导出队列
+    monkeypatch.setattr(telem, "_EXPORTER_THREAD", object())
+    while not telem._EXPORT_QUEUE.empty():
+        try:
+            telem._EXPORT_QUEUE.get_nowait()
+        except Exception:
+            break
+    span = telem.tracer.start("exportable.span")
+    telem.tracer.end(span)
+    assert telem._EXPORT_QUEUE.qsize() == 1
+    drained = telem._drain_export_queue()
+    assert len(drained) == 1
+    # 出队后再取为空：同一批 span 不会被无限重复导出
+    assert telem._drain_export_queue() == []
+
+
+# ---------------- 9. Agent 根 Span 接通后续链路 ----------------
+def test_set_current_links_children_and_traceparent():
+    from telemetry import tracer as t, build_traceparent
+    root = t.start("agent.run")
+    token = t.set_current(root)
+    try:
+        # child span 沿用 root 的 trace_id 与 parent 链
+        child = t.start("agent.tool.run_query", parent=root)
+        assert child.context.trace_id == root.context.trace_id
+        assert child.parent_span_id == root.context.span_id
+        t.end(child)
+        # current_traceparent 反映 root，供 client 注入
+        tp = t.current_traceparent()
+        assert tp == build_traceparent(root.context.trace_id, root.context.span_id)
+    finally:
+        t.restore(token)
+        t.end(root)
+
+
+# ---------------- 10. 审计 AUDIT_REQUIRED 直接同步并传播异常 ----------------
+def test_audit_required_bypasses_queue_and_persists(monkeypatch):
+    from mcp_server.authorization import audit as audit_mod
+
+    written = []
+
+    def fake_write(rows):
+        written.extend(rows)
+
+    monkeypatch.setattr(audit_mod, "_write_rows", fake_write)
+    monkeypatch.setattr(audit_mod.config, "AUDIT_STORE", "mysql")
+    monkeypatch.setattr(audit_mod.config, "AUDIT_REQUIRED", True)
+
+    audit_mod.log_event("required_audit", principal="alice")
+    assert len(written) == 1
+    assert written[0][0] == "required_audit"
+
+
+def test_audit_required_propagates_write_error(monkeypatch):
+    from mcp_server.authorization import audit as audit_mod
+
+    def boom(rows):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(audit_mod, "_write_rows", boom)
+    monkeypatch.setattr(audit_mod.config, "AUDIT_STORE", "mysql")
+    monkeypatch.setattr(audit_mod.config, "AUDIT_REQUIRED", True)
+
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        audit_mod.log_event("required_audit", principal="alice")

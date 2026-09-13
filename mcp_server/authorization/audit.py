@@ -192,7 +192,8 @@ class AuditWriter:
         with self._lock:
             self._failed += 1
             self._healthy = False
-        mode = "fail" if config.AUDIT_REQUIRED else config.AUDIT_FAILURE
+        # 异步路径仅由非 AUDIT_REQUIRED 事件触发；required 模式已在 log_event 内同步抛出。
+        mode = config.AUDIT_FAILURE
         metrics.inc("audit_write_failures_total", {"mode": mode})
         if mode == "ignore":
             if drop:
@@ -241,10 +242,15 @@ def log_event(event: str, **fields) -> None:
     record.update(fields)
     # 结构化日志始终保留（与落库解耦），保证默认 AUDIT_STORE=log 也能追溯。
     logger.info(json.dumps(record, ensure_ascii=False, sort_keys=True, default=str))
+    if config.AUDIT_STORE != "mysql":
+        return
+    if config.AUDIT_REQUIRED:
+        # 必需落库：绕过有损队列直接同步写入，并把写失败异常传播给调用方，
+        # 杜绝"队列满丢弃 / 后台吞错但仍返回成功"的不保证问题。
+        _write_rows([_row(record)])
+        metrics.inc("audit_persisted_total", {"store": "mysql"})
+        return
     _writer.enqueue(record)
-    if config.AUDIT_STORE == "mysql" and config.AUDIT_REQUIRED:
-        # 必须入库：同步排空队列，确保本次事件在其返回前已落库。
-        _writer.flush()
 
 
 def audit_stats() -> dict:

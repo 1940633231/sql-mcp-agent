@@ -5,6 +5,8 @@
 
 > **当前版本：v0.8.0（标准可观测性导出 + CI 安全扫描 + 审计落盘）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固 → v0.8.0 工程化收尾（Metrics 标准导出、Alertmanager 外置、零基础设施审计落盘、CodeQL/Trivy/Dependabot 安全门禁）。MCP Tool 契约仍以 v0.5.0 兼容基线为准。
 
+企业级 SQL Agent + MCP 数据访问平台：基于 MCP 构建 Agent 与数据库之间的标准化工具调用层，引入 SQL AST 安全校验、RBAC/表列 ACL、RLS 行级权限、领域查询工具及 Schema Intelligence，限制 LLM 对数据库的直接访问；同时实现 Agent 超时/重试/调用预算、统一错误码、OpenTelemetry Trace、Prometheus Metrics、审计及 CI 安全扫描，形成从 Agent → MCP → 权限 → SQL → 数据库的完整治理链路。
+
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型 Reference Implementation。数据访问是标准 MCP Server，安全防线独立成模块，策略外置为 YAML，Agent 动态发现工具并调用受治理的领域能力。
 
 本项目已经覆盖 Agent 可靠性、权限控制和可观测性，但默认配置不等同于可直接公开部署的生产系统；部署前请阅读「生产化要点」和「已知边界」。

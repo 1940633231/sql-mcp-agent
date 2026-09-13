@@ -9,6 +9,24 @@
 - `.env.example` 改为最小可复制模板：只启用本地启动必需配置，Static/JWT、MySQL Policy Store、审计与 OTLP 等模式全部改为注释示例，避免空字符串被误当成有效配置。
 - 新增 `.env.example` 可复制性回归测试，实际加载模板并导入 `mcp_server.server`，防止空值、行尾注释和错误 Token 映射再次导致启动失败。
 
+## [v0.7.0] - 2026-09-13
+
+### Added
+- **共享遥测内核 `telemetry/`**：纯标准库实现 OpenTelemetry 数据模型 + W3C `traceparent` 传播 + 有界内存 span 缓冲 + 可选 OTLP/HTTP（JSON）导出；Server 与 Agent 共用，让 Agent → MCP → Authorization → Database 四层 Span 落在同一条 trace。
+- **四层 Span 与跨服务链路**：`agent.run/agent.llm/agent.tool`、`mcp.server.*`、`authorization.decision`、`database.query` 均带状态；一次请求可凭 `request_id` + `trace_id` 完整定位；Agent 启动 OTLP 导出并在退出前 flush。
+- **Metrics 加固**：有界直方图（固定分桶，不再在内存保留全部样本）；标签卫生（禁止原始 SQL/完整用户输入/高基数字段）；SQL 延迟成功/失败都记录；错误率按「错误码 × 工具 × 主体类型」聚合。
+- **错误率统一分母**：新增 `query_requests_total` 作为统一分母（覆盖认证/校验/权限/并发/DB 全路径，保证 0–100%）；新增 `tool_business_errors_total` 计入返回业务错误的工具调用，修正 `tool_failure_rate`。
+- **审计**：后台异步批量落库 + 失败策略（ignore/warn/fail）+ 保留周期 + 归档表；`AUDIT_REQUIRED` 时绕过有损队列直接同步写入并传播异常。
+- **可观测性端点**：`/traces`（最近 span）、`/dashboard`（运行态概览）、`/alerts`（进程内告警状态）。
+- **进程内告警引擎** + 配置 `configs/alerts.yaml`（可注入时钟，支持 pending→firing→resolved 状态机）；配套 Grafana 面板 `configs/grafana/dashboard.json` 与 Prometheus 规则 `configs/prometheus/alerts.yml`（错误率 / P95/P99 延迟 / 超时率 / 工具失败率 / 连接池饱和度）。
+- `tests/test_observability_v07.py`：有界直方图、标签卫生、traceparent/Span、告警状态机与时序、采样、审计 required 语义、错误率口径等回归测试。
+
+### Fixed
+- **告警永远不 firing**：`pending_since` 首次进入 pending 即记录，修复后 `for` 窗口可达，规则能正常转为 firing/resolved。
+- **Agent→MCP trace 未接通**：`agent.run` 根 Span 用 `set_current` 接通 `agent.llm/agent.tool` child 与 `client.py` 的 `traceparent` 注入。
+- **OTLP 重复导出**：导出改消费型队列（出队即不再重发）；`OTEL_SAMPLE_RATIO=0` 时未采样 Span 不再被记录/导出。
+- **`AUDIT_REQUIRED` 不保证入库**：required 模式绕过有损队列直接同步写入并向上抛错。
+
 ## [v0.6.0] - 2026-09-12
 
 ### Added

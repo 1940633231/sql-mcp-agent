@@ -1,0 +1,39 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.2
+    container_name: mcp-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./configs/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - mcp_prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # 正常启动请用 scripts/start_monitoring.sh，它会注入当前 WSL 网关。
+      - "host.docker.internal:${HOST_GATEWAY_IP:-host-gateway}"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: mcp-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sql-mcp-dashboard.json
+    volumes:
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/grafana/dashboard.json:/var/lib/grafana/dashboards/sql-mcp-dashboard.json:ro
+      - mcp_grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  mcp_prometheus_data:
+  mcp_grafana_data:

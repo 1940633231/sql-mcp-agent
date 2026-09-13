@@ -1,0 +1,13 @@
+# 自动加载 SQL MCP 面板。
+apiVersion: 1
+
+providers:
+  - name: SQL MCP
+    orgId: 1
+    folder: SQL MCP
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

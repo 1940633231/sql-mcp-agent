@@ -21,7 +21,7 @@
       "id": 1,
       "title": "SQL 查询错误率",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "sum(rate(query_errors_total[5m])) / clamp_min(sum(rate(query_requests_total[5m])), 0.0001)",
          "legendFormat": "错误率", "refId": "A"}
@@ -33,7 +33,7 @@
       "id": 2,
       "title": "SQL 查询延迟 P95 / P99",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "histogram_quantile(0.95, sum by (le) (rate(query_latency_overall_seconds_bucket[5m])))",
          "legendFormat": "P95", "refId": "A"},
@@ -47,7 +47,7 @@
       "id": 3,
       "title": "业务连接池饱和度",
       "type": "stat",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "db_pool_saturation_business", "legendFormat": "业务池", "refId": "A"},
         {"expr": "db_pool_saturation_policy", "legendFormat": "策略池", "refId": "B"}
@@ -59,7 +59,7 @@
       "id": 4,
       "title": "SQL 查询超时率",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "sum(rate(query_errors_total{code=\"query_timeout\"}[5m])) / clamp_min(sum(rate(query_errors_total[5m])), 0.0001)",
          "legendFormat": "超时率", "refId": "A"}
@@ -71,7 +71,7 @@
       "id": 5,
       "title": "MCP 工具失败率",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "(sum(rate(mcp_requests_total{status=\"error\"}[5m])) + sum(rate(tool_business_errors_total[5m]))) / clamp_min(sum(rate(mcp_requests_total[5m])), 0.0001)",
          "legendFormat": "工具失败率", "refId": "A"}
@@ -83,7 +83,7 @@
       "id": 6,
       "title": "请求吞吐 (QPS)",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "sum(rate(mcp_requests_total{method=~\".+\"}[5m]))",
          "legendFormat": "请求/s", "refId": "A"}
@@ -95,7 +95,7 @@
       "id": 7,
       "title": "SQL 执行量/错误量 (按状态)",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "sum by (status) (rate(query_executions_total[5m]))",
          "legendFormat": "{{status}}", "refId": "A"}
@@ -107,7 +107,7 @@
       "id": 8,
       "title": "审计写入健康",
       "type": "timeseries",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "sum(rate(audit_persisted_total[5m]))", "legendFormat": "落库/s", "refId": "A"},
         {"expr": "sum(rate(audit_write_failures_total[5m]))", "legendFormat": "失败/s", "refId": "B"}

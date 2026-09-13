@@ -4,7 +4,7 @@ pymysql==1.2.0
 openai==3.10.0
 python-dotenv==1.2.3
 sqlglot==30.18.0
-PyYAML==6.0.2
+PyYAML==6.0.3
 PyJWT[crypto]==2.13.0
 cryptography==50.0.1
 prometheus-client==0.26.0

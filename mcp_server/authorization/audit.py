@@ -156,6 +156,22 @@ class AuditWriter:
         except queue.Full:
             self._count_failure("audit queue full", drop=True)
 
+    def persist_sync(self, rows: list[tuple]) -> None:
+        """必需落库入口：同步写入并使统计与失败策略保持一致；写失败向上抛出。
+
+        与异步路径共用同一套统计（persisted/healthy/failed）与指标，
+        确保 ``AUDIT_REQUIRED`` 事件也计入统一统计。
+        """
+        try:
+            _write_rows(rows)
+        except Exception as exc:
+            self._count_failure(str(exc), drop=False)
+            raise
+        with self._lock:
+            self._persisted += len(rows)
+            self._healthy = True
+        metrics.inc("audit_persisted_total", {"store": "mysql"}, value=len(rows))
+
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
@@ -245,10 +261,8 @@ def log_event(event: str, **fields) -> None:
     if config.AUDIT_STORE != "mysql":
         return
     if config.AUDIT_REQUIRED:
-        # 必需落库：绕过有损队列直接同步写入，并把写失败异常传播给调用方，
-        # 杜绝"队列满丢弃 / 后台吞错但仍返回成功"的不保证问题。
-        _write_rows([_row(record)])
-        metrics.inc("audit_persisted_total", {"store": "mysql"})
+        # 必需落库：绕过有损队列直接同步写入并同步统计；写失败向上抛给调用方。
+        _writer.persist_sync([_row(record)])
         return
     _writer.enqueue(record)
 

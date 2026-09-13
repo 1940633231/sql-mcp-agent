@@ -98,7 +98,10 @@ class Span:
 
 
 def parse_traceparent(header: str) -> SpanContext | None:
-    """解析 W3C traceparent：``version-traceid-spanid-flags``（可含 trace-state）。"""
+    """解析 W3C traceparent：``version-traceid-spanid-flags``（可含 trace-state）。
+
+    加固：校验非零（全零 trace_id/span_id 视为无效），避免恶意/破损头被当成合法远端。
+    """
     if not header:
         return None
     first = header.split(",")[0].strip()
@@ -115,6 +118,9 @@ def parse_traceparent(header: str) -> SpanContext | None:
         int(span_id, 16)
         int(flags, 16)
     except ValueError:
+        return None
+    # 全零属于无效 trace/span id（W3C/OTel 要求），视为无远端上下文。
+    if set(trace_id) == {"0"} or set(span_id) == {"0"}:
         return None
     return SpanContext(trace_id=trace_id, span_id=span_id, trace_flags=flags[:2])
 
@@ -433,8 +439,12 @@ class Tracer:
 
 
 def _sample_flag(parent_flag: str) -> str:
-    if parent_flag and parent_flag != "00":
-        return parent_flag
+    """采样继承：父已采样（01）则子采样，父未采样（00）则子也不采样（不重新决策）；
+    仅在无父（新根 trace）时按 OTEL_SAMPLE_RATIO 决策。"""
+    if parent_flag == "01":
+        return "01"
+    if parent_flag == "00":
+        return "00"
     if OTEL_SAMPLE_RATIO <= 0:
         return "00"
     if OTEL_SAMPLE_RATIO >= 1.0 or secrets.randbelow(10000) / 10000.0 < OTEL_SAMPLE_RATIO:

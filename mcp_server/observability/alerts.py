@@ -129,20 +129,22 @@ class AlertEngine:
         biz_tool_err = delta(
             "tool_business_errors_total", None, prev.get("counters"), snap["counters"]
         )
+        # 工具失败率仅统计 `tools/call` 调用（rResource/MCP 握手不计入分母）。
         tool_total = delta(
-            "mcp_requests_total", None, prev.get("counters"), snap["counters"]
+            "mcp_requests_total",
+            lambda lab: lab.get("method") == "tools/call",
+            prev.get("counters"), snap["counters"],
         )
         tool_err = delta(
             "mcp_requests_total",
-            lambda lab: lab.get("status") == "error",
+            lambda lab: lab.get("method") == "tools/call" and lab.get("status") == "error",
             prev.get("counters"), snap["counters"],
         )
 
         # error_rate 分母用统一 requests 口径；缺 requests 时回退到 exec（兼容运行中实例）。
         rate_denom = requests_delta if requests_delta > 0 else exec_delta
         error_rate = err_delta / rate_denom if rate_denom > 0 else 0.0
-        tool_denom = tool_total if tool_total > 0 else requests_delta
-        tool_failure = (tool_err + biz_tool_err) / tool_denom if tool_denom > 0 else 0.0
+        tool_failure = (tool_err + biz_tool_err) / tool_total if tool_total > 0 else 0.0
 
         hist = snap.get("histograms", {})
         latency_summary = hist.get("query_latency_overall_seconds") or {}

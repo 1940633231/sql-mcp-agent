@@ -450,6 +450,8 @@ class SQLAgent:
         返回 RunResult（答案 + 稳定错误码 + 指标），不再返回裸字符串。
         """
         started = time.monotonic()
+        # V0.7.1：即使以库（非 CLI）方式调用，也确保 OTLP 导出被启动并在结束后投递。
+        start_exporter()
         # V0.7：Agent 层根 Span；不记录完整问题（标签卫生，只留长度与指纹）。
         # 必须 set_current 让 _call_llm/_invoke_tool 的 child span 与 client.py 的
         # traceparent 注入都落在同一 trace_id 下。
@@ -529,6 +531,7 @@ class SQLAgent:
                 },
             )
             tracer.restore(_root_token)
+            flush_exporter()  # 非 CLI 场景也能在结束后导出本批 Span
         return result
 
 

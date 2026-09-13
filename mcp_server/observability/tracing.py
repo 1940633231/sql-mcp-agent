@@ -13,6 +13,7 @@ from telemetry import (
     SpanContext,
     SpanKind,
     build_traceparent,
+    flush_exporter,
     parse_traceparent,
     start_exporter,
     tracer,
@@ -22,6 +23,7 @@ from .context import get_trace_context
 __all__ = [
     "tracer",
     "start_exporter",
+    "flush_exporter",
     "SpanKind",
     "root_span",
     "request_child_span",

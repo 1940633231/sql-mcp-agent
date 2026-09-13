@@ -128,6 +128,14 @@ OTEL_OTLP_HTTP_ENDPOINT = os.getenv("OTEL_OTLP_HTTP_ENDPOINT", "").strip().rstri
 ALERT_RULES_PATH = os.getenv("ALERT_RULES_PATH", "")  # 默认 configs/alerts.yaml
 ALERT_EVAL_SECONDS = float(os.getenv("ALERT_EVAL_SECONDS", "30"))
 
+# V0.7.1：管理端点（/traces /dashboard /alerts）的访问保护
+# 设置 MANAGEMENT_AUTH_TOKEN 后要求 `Authorization: Bearer <token>`；
+# 未设置时默认仅允许回环地址访问（内网隔离）。
+MANAGEMENT_AUTH_TOKEN = os.getenv("MANAGEMENT_AUTH_TOKEN", "").strip()
+MANAGEMENT_LOOPBACK_ONLY = os.getenv(
+    "MANAGEMENT_LOOPBACK_ONLY", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 
 def get_policy_connection() -> dict:
     """返回策略库专用连接参数。"""

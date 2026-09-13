@@ -9,6 +9,17 @@
 - `.env.example` 改为最小可复制模板：只启用本地启动必需配置，Static/JWT、MySQL Policy Store、审计与 OTLP 等模式全部改为注释示例，避免空字符串被误当成有效配置。
 - 新增 `.env.example` 可复制性回归测试，实际加载模板并导入 `mcp_server.server`，防止空值、行尾注释和错误 Token 映射再次导致启动失败。
 
+## [v0.7.1] - 2026-09-13
+
+### Fixed
+- **管理端点保护**：`/traces`、`/dashboard`、`/alerts` 新增 `_management_guard`——配置 `MANAGEMENT_AUTH_TOKEN` 后要求 Bearer 认证；未配置时默认 `MANAGEMENT_LOOPBACK_ONLY=true` 仅放行回环地址，实现内网隔离。
+- **SQL 文本不落指标标签**：移除 `query_service` 中 `str(sql)[:20]` 的 `tool` 标签回退，指标不再可能泄露 SQL。
+- **工具失败率分母修正**：`tool_failure_rate` 只统计 `tools/call` 的 MCP 请求作分母，握手/Resource 等不再计入。
+- **OTLP 导出覆盖关闭场景**：Server 关闭前 `flush_exporter()` 一次性投递剩余 Span；Agent 在 `run()`（非仅 CLI）也 `start_exporter()` + 结束时 `flush_exporter()`。
+- **required audit 统一统计**：`AUDIT_REQUIRED` 改为走 `AuditWriter.persist_sync`，与异步路径共享 persisted/healthy/failed 统计与 `audit_persisted_total` 指标。
+- **Trace Context 加固**：`parse_traceparent` 拒绝全零 trace/span id；采样决策改为**继承父采样**（父未采样则子不采样，不再按自身比例重新决策）。
+- 新增对应回归测试（管理保护 / 全零拒绝 / 采样继承 / required 统计 / tools-call 分母）。
+
 ## [v0.7.0] - 2026-09-13
 
 ### Added

@@ -2,7 +2,7 @@
 
 ![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
 
-> **当前版本：v0.7.0（Observability Hardening）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固
+> **当前版本：v0.7.1（Observability Hardening fix）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固 + v0.7.1 发布级修复
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
 

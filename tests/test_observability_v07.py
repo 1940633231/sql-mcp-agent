@@ -310,9 +310,80 @@ def test_tool_failure_rate_includes_business_errors(monkeypatch):
     m = alerts_mod.metrics_mod.metrics
     engine = alerts_mod.AlertEngine(interval_seconds=60)
 
-    # 业务错误返回（不抛异常）：tool_business_errors_total 应计入分子
-    m.inc("query_requests_total", {}, 4)
+    # 分母只统计 tools/call 的 MCP 请求；业务错误（tool_business_errors_total）进入分子。
+    m.inc("mcp_requests_total", {"method": "initialize", "status": "ok"}, 100)  # 不计入分母
+    m.inc("mcp_requests_total", {"method": "tools/call", "status": "ok"}, 4)
     m.inc("tool_business_errors_total", {"tool": "run_query"}, 1)
     sig = engine.evaluate()["signals"]
-    # 无 MCP 协议异常时，分母回退到 requests（4），分子=业务错误 1
+    # 分子=业务错误 1，分母=tools/call 4
     assert sig["tool_failure_rate"] == 1 / 4
+
+
+# ---------------- 12. V0.7.1：管理端点保护 ----------------
+class _FakeReq:
+    def __init__(self, host="127.0.0.1", headers=None):
+        class _H:
+            pass
+        self.client = _H()
+        self.client.host = host
+        self.headers = headers or {}
+
+
+def test_management_guard_restricts_non_loopback(monkeypatch):
+    from mcp_server import server as server_mod
+    monkeypatch.setattr(server_mod.config, "MANAGEMENT_AUTH_TOKEN", "")
+    monkeypatch.setattr(server_mod.config, "MANAGEMENT_LOOPBACK_ONLY", True)
+    assert server_mod._management_guard(_FakeReq(host="127.0.0.1")) is None
+    assert server_mod._management_guard(_FakeReq(host="::1")) is None
+    denied = server_mod._management_guard(_FakeReq(host="10.0.0.8"))
+    assert denied is not None and denied.status_code == 403
+    monkeypatch.setattr(server_mod.config, "MANAGEMENT_LOOPBACK_ONLY", False)
+    assert server_mod._management_guard(_FakeReq(host="10.0.0.8")) is None
+
+
+def test_management_guard_requires_bearer_when_token_set(monkeypatch):
+    from mcp_server import server as server_mod
+    monkeypatch.setattr(server_mod.config, "MANAGEMENT_AUTH_TOKEN", "s3cret")
+    ok = server_mod._management_guard(_FakeReq(host="10.0.0.8",
+                                               headers={"authorization": "Bearer s3cret"}))
+    assert ok is None
+    denied = server_mod._management_guard(_FakeReq(host="127.0.0.1"))
+    assert denied is not None and denied.status_code == 401
+
+
+# ---------------- 13. V0.7.1：全零 traceparent 拒绝 + 采样继承 ----------------
+def test_traceparent_rejects_all_zero_trace_and_span():
+    assert parse_traceparent("00-" + "0" * 32 + "-" + "1" * 16 + "-01") is None
+    assert parse_traceparent("00-" + "1" * 32 + "-" + "0" * 16 + "-01") is None
+
+
+def test_sampling_inherited_from_parent(monkeypatch):
+    import telemetry as telem
+    # 全局高采样，但父未采样时应继承为未采样（不重新决策）
+    span = telem.tracer.start("a", parent=telem.SpanContext("1" * 32, "2" * 16, "00"))
+    assert span.recording is False and span.context.trace_flags == "00"
+    # 全局低采样，但父已采样时应继承为已采样
+    monkeypatch.setattr(telem, "OTEL_SAMPLE_RATIO", 0.0)
+    span = telem.tracer.start("b", parent=telem.SpanContext("1" * 32, "2" * 16, "01"))
+    assert span.recording is True and span.context.trace_flags == "01"
+
+
+# ---------------- 14. V0.7.1：required audit 同步更新统一统计 ----------------
+def test_audit_required_persist_sync_updates_stats(monkeypatch):
+    from mcp_server.authorization import audit as audit_mod
+
+    written = []
+
+    def fake_write(rows):
+        written.extend(rows)
+
+    monkeypatch.setattr(audit_mod, "_write_rows", fake_write)
+    monkeypatch.setattr(audit_mod.config, "AUDIT_STORE", "mysql")
+    monkeypatch.setattr(audit_mod.config, "AUDIT_REQUIRED", True)
+
+    before = audit_mod.audit_stats()["persisted"]
+    audit_mod.log_event("required_audit", principal="alice")
+    assert len(written) == 1
+    stats = audit_mod.audit_stats()
+    assert stats["persisted"] == before + 1
+    assert stats["healthy"] is True

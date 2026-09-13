@@ -69,6 +69,8 @@ async def lifespan(server):
         await lifecycle.wait_for_drain(config.SHUTDOWN_GRACE_SECONDS)
         audit_mod.audit_flush()
         audit_mod.audit_stop()
+        # 关闭前把 OTLP 导出队列剩余 Span 一次性投递，避免 daemon 线程丢失。
+        tracing_mod.flush_exporter()
         tracing_mod.tracer.buffer.clear()
         close_pools()
         lifecycle.set_stopped()
@@ -104,18 +106,49 @@ async def metrics_endpoint(request: Request) -> Response:
     return Response(metrics_payload(), media_type="text/plain; version=0.0.4")
 
 
+def _management_guard(request: Request):
+    """保护 /traces /dashboard /alerts：优先 Bearer 认证，否则默认仅放行回环地址。
+
+    返回 None 表示放行；否则返回应直接吐出的响应。
+    """
+    token = config.MANAGEMENT_AUTH_TOKEN
+    if token:
+        auth = request.headers.get("authorization", "")
+        if auth == "Bearer %s" % token:
+            return None
+        return JSONResponse({"error": "management endpoint requires valid bearer token"},
+                            status_code=401)
+    if config.MANAGEMENT_LOOPBACK_ONLY:
+        host = (request.client.host if request.client else "") or ""
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            return JSONResponse(
+                {"error": "management endpoint restricted to loopback"},
+                status_code=403,
+            )
+    return None
+
+
 @server.custom_route("/traces", methods=["GET"], include_in_schema=False)
 async def traces_endpoint(request: Request) -> Response:
+    guard = _management_guard(request)
+    if guard is not None:
+        return guard
     return JSONResponse(traces_payload())
 
 
 @server.custom_route("/dashboard", methods=["GET"], include_in_schema=False)
 async def dashboard_endpoint(request: Request) -> Response:
+    guard = _management_guard(request)
+    if guard is not None:
+        return guard
     return JSONResponse(dashboard_payload())
 
 
 @server.custom_route("/alerts", methods=["GET"], include_in_schema=False)
 async def alerts_endpoint(request: Request) -> Response:
+    guard = _management_guard(request)
+    if guard is not None:
+        return guard
     return JSONResponse(alerts_payload())
 
 

@@ -84,7 +84,8 @@ class QueryService:
         elapsed = time.monotonic() - started
         status = "ok" if "error" not in result else "error"
         code = result.get("code", "ok")
-        tool = (metric_ctx.tool_name if metric_ctx else "") or str(sql)[:20]
+        # 不得把 SQL 文本落入指标标签：仅取请求级 tool_name，取不到即为空。
+        tool = (metric_ctx.tool_name if metric_ctx else "") or ""
         principal = _principal_category(metric_ctx) if metric_ctx else "unauthenticated"
         attr = {
             "status": status,

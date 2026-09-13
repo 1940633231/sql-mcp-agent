@@ -1,10 +1,13 @@
 # SQL Agent + MySQL MCP Server
 
-![release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)
+[![Release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)](https://github.com/1940633231/sql-mcp-agent/releases)
+[![CI](https://github.com/1940633231/sql-mcp-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/1940633231/sql-mcp-agent/actions/workflows/ci.yml)
 
-> **当前版本：v0.7.1（Observability Hardening fix）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固 + v0.7.1 发布级修复
+> **当前版本：v0.7.1（Observability Hardening fix）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固 + v0.7.1 发布级修复。MCP Tool 契约仍以 v0.5.0 兼容基线为准。
 
-一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型项目。按「生产级 MCP」分层设计：数据访问是标准 MCP Server，安全防线独立成模块、策略外置为 YAML，Agent 动态发现工具、由大模型决定调用哪个工具解题。
+一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型 Reference Implementation。数据访问是标准 MCP Server，安全防线独立成模块，策略外置为 YAML，Agent 动态发现工具并调用受治理的领域能力。
+
+本项目已经覆盖 Agent 可靠性、权限控制和可观测性，但默认配置不等同于可直接公开部署的生产系统；部署前请阅读「生产化要点」和「已知边界」。
 
 ## 它能做什么
 
@@ -23,29 +26,34 @@
 
 ## 架构
 
-```
-┌──────────────────────────────┐
-│  agent/                       │   自然语言问题
-│   agent.py   ReAct 主循环     │─────────┐
-│   client.py  MCP 会话 / 适配  │         │ ① 发现工具 (list_tools) + schema
-│   config.py  LLM + 端点       │         │ ② 调用工具 (call_tool)
-└──────────────┬───────────────┘         │
-               │                          │
-┌──────────────▼───────────────┐         │
-│  mcp_server/                  │  python -m mcp_server.server
-│   server.py    组装工具+资源   │   默认 Streamable HTTP（常驻服务）
-│   tools/       schema / query │   可切 stdio（MCP_TRANSPORT=stdio）
-│   security/    parser/policy/ │
-│                validator/     │  ← 只读安全防线（策略见 configs/security.yaml）
-│                models         │
-│   database/    connection/    │
-│                executor       │
-│   config.py    DB + 传输参数   │
-└──────────────┬───────────────┘
-               │ ③ 连接
-┌──────────────▼───────────────┐
-│  MySQL sales_demo            │  独立业务库：company / sale_records
-└──────────────────────────────┘
+```text
+agent/
+  agent.py             ReAct / function-calling 主循环 + 可靠性预算
+  client.py            MCP Session + traceparent 注入
+  reliability.py       超时、重试、错误码、RunResult
+
+              │ MCP Streamable HTTP / stdio
+              ▼
+
+mcp_server/
+  server.py            工具/Resource 注册、HTTP/stdio、探针与管理端点
+  tools/               list_tables / get_schema / search_schema
+                       run_query / 领域工具 / 策略管理工具
+  services/            QueryService：安全 → 授权 → LIMIT → 执行 → 审计/指标
+  domain/              QueryTemplate / QuerySpec / 安全参数绑定 / 领域 DTO
+  security/            sqlglot AST / Security Policy / Validator
+  authorization/       RBAC / ACL / RLS / SQL 重写 / Policy DB / Audit
+  auth/                Bearer / JWT / Principal / RequestContext
+  catalog/             SchemaCatalog / 业务语义检索
+  database/            连接池 / 参数绑定 / 只读执行
+  observability/       Metrics / Trace / Alerts / Health / Lifecycle
+
+telemetry/             共享 Span 模型 / W3C traceparent / OTLP 导出
+
+              │ SQL
+              ▼
+
+MySQL                  sales_demo：company / sale_records
 ```
 
 ### SQL 安全架构（V0.2）
@@ -86,7 +94,7 @@ MCP 对外能力：
 | --- | --- | --- |
 | Tool | `list_tables` | 列出业务库所有表 |
 | Tool | `get_schema(table_name)` | 查看某表完整结构 DTO（表级描述/主键/外键/索引 + 列含业务描述/枚举），按 ACL 裁剪可见列与被引用表/列 |
-| Tool | `search_schema(keyword)` | 按关键字检索表/列的业务语义（业务名/别名/同义词/描述） |
+| Tool | `search_schema(keyword, deep=false)` | 按关键字检索表/列的业务语义（业务名/别名/同义词/描述）；`deep=true` 全库扫描 |
 | Tool | `run_query(sql)` | 执行只读 SQL（仅单条 SELECT），返回行数据 |
 | Tool | `sales_summary(start_date, end_date, granularity, company_id, limit)` | 按时间粒度汇总销售额/订单数/客单价（时间粒度/时区/销售额口径显式定义） |
 | Tool | `company_ranking(start_date, end_date, industry, sort_by, order_dir, limit)` | 按销售额/单量/客单价对公司排名（并列按 company_id 升序，limit ≤ 50） |
@@ -100,22 +108,41 @@ MCP 对外能力：
 | Resource | `database://schema` | 全库各表完整结构 DTO（含表描述/键/外键/索引/枚举，应用预取，省钱省轮次） |
 | Resource | `database://table/{table_name}` | 单表完整结构 DTO（URI 模板资源） |
 
-## 稳定 API 契约（V0.5）
+## 稳定 API 契约（V0.5 兼容基线，当前实现 v0.7.0）
 
-以下对外接口为 **v0.5.0 基线冻结**，任何增删改须显式走版本演进并同步更新 `tests/test_api_contract.py`（改动即回归失败）。
+V0.5.0 冻结了以下 MCP Tool 和 Resource 契约。V0.6、V0.7 增加了 Agent 可靠性和可观测性，但没有破坏既有 MCP Tool 名称与参数。任何增删改仍须走版本演进，并同步更新 `tests/test_api_contract.py`。
 
 - **Tool（13 个）**：`list_tables` / `get_schema(table_name)` / `search_schema(keyword, deep=false)` / `run_query(sql)` / `sales_summary(start_date, end_date, granularity, company_id, limit)` / `company_ranking(start_date, end_date, industry, sort_by, order_dir, limit)` / `industry_analysis(start_date, end_date, industry, sort_by, order_dir, limit)` / `get_policy_status` / `reload_permission_policy` / `validate_permission_policy(document)` / `publish_permission_policy(document, expected_version)` / `list_permission_policy_versions(limit)` / `export_permission_policy`。
 - **Resource（2 个）**：`database://schema`、`database://table/{table_name}`（均返回完整语义 DTO：表级 `label/description/primary_keys/foreign_keys/indexes` + 列 `name/type/label/description/synonyms/enum_values`）。
 - **权限动作**：`schema:list` / `schema:read` / `query:run` / `policy:read|validate|publish|rollback`。
-- **错误结构**：`run_query` / `get_schema` 与三个领域工具返回统一 dict；出错形如 `{"error": str, "code": str}`（领域工具另有 `invalid_parameter` / `unknown_domain_tool`）；查询成功含 `rows` / `columns` / `row_count` / `query_ms`。
+- **查询错误结构**：`run_query`、`get_schema` 与三个领域工具出错时返回 `{"error": str, "code": str}`。
+- **查询成功结构**：`rows` / `columns` / `row_count` / `elapsed_seconds` / `truncated` / `result_bytes` / `truncated_reason`。
 - **领域工具成功 DTO**：`data` / `columns` / `meta`（`tool` / `parameters` / `semantics` / `row_count` / `elapsed_seconds` / `result_bytes` / `truncated_reason`）/ `definition_version` / `policy_version` / `truncated`。
 
 ### Domain Query Layer（V0.5）
 
 - 定义由服务端维护在 `configs/domain_queries.yaml`（SQL 模板 / 参数定义 / 结果契约 / 领域口径），以内容哈希生成 `definition_version` 随 DTO 返回；按 mtime + TTL 自动重载。
 - **参数绑定**：值参数（日期 / 整数 / 枚举）先做类型与范围校验，再以 `?` 占位符经数据库驱动绑定执行，值文本绝不进入 SQL；排序 / 分组 / 时间粒度等标识符只能取 `identifiers` 白名单映射的固定片段。
-- **口径显式定义**：`sales_summary`（时间粒度 / 时区 / 销售额口径 / 退款与取消不计入）、`company_ranking`（排名指标 / 时间窗口 / 并列按 company_id 升序 / limit ≤ 50）、`industry_analysis`（行业维度 / 未知行业拒绝 / 占比分母与覆盖范围）。
+- **口径显式定义**：`sales_summary` 当前表没有退款/取消状态字段，所有销售记录均视为有效成交并全额计入；`company_ranking` 按指定指标排序并以 `company_id` 保证唯一顺序；`industry_analysis` 的占比分母始终是窗口内全部行业销售额，不随 `industry` 过滤改变。
 - **安全一致性**：领域工具不直接访问数据库，统一经 QueryService（AST Guard / RBAC / ACL / RLS / LIMIT / 审计 / 指标），任意主体的越权与行级过滤行为与 `run_query` 完全一致。
+
+### Agent 返回契约（V0.6/V0.7）
+
+`SQLAgent.run()` 不再返回裸字符串，而是返回 `RunResult`：
+
+```python
+from agent.agent import SQLAgent
+
+agent = SQLAgent()
+result = await agent.run("今年销售额最高的10家公司")
+
+print(result.status)          # success / timeout / model_error / ...
+print(result.answer)          # 成功时为用户答案
+print(result.error_message)   # 失败时为稳定错误说明
+print(result.to_dict())       # answer + status + 运行指标
+```
+
+运行指标包括迭代数、工具调用数、SQL 修复次数、耗时、Token 数量和估算费用。CLI 入口会将这些信息渲染为终端文本。
 
 ## 模块边界与依赖方向
 
@@ -124,7 +151,7 @@ MCP 对外能力：
 ```text
 agent/（LLM 编排层）
   └─ 提示 / 工具发现 / function-calling 主循环；唯一 MCP 客户端入口；不做 SQL 安全与授权
-server.py（传输/组装层）
+mcp_server/server.py（传输/组装层）
   └─ 组装 MCPServer：工具注册、Resource、HTTP/stdio、探针；不实现任何业务判定
 mcp_server/（领域层）
   tools/        只做 MCP 协议转换 + 参数校验 + 授权裁剪；不做安全判定
@@ -139,7 +166,8 @@ mcp_server/（领域层）
 
 依赖方向：`agent → server(HTTP/stdio) → tools → services → security / authorization / catalog → database`。
 
-约束（各层"不做什么"）：
+约束（各层“不做什么”）：
+
 - `agent/` 不得 import `mcp_server` 内部的 security / authorization；只经由公开的 MCP 端点和工具交互。
 - `tools/` 不实现安全判定与授权决策，只校验参数并调用下层。
 - `domain/` 只做模板渲染与 DTO 包装，不直接访问数据库；安全判定全部委托 QueryService。
@@ -151,8 +179,9 @@ mcp_server/（领域层）
 
 ### 1. 环境准备
 
+需要 Python 3.12+ 和 MySQL 8.0+。业务库建议使用独立的只读账号。
+
 ```bash
-# Python 3.12+
 python -m venv .venv
 .venv\Scripts\activate        # Windows；macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
@@ -161,24 +190,39 @@ pip install -r requirements.txt
 ### 2. 配置连接
 
 ```bash
-cp .env.example .env          # 然后编辑 .env 填入数据库密码 与 LLM API Key
+cp .env.example .env
 ```
+
+`.env.example` 是最小可复制模板。Static/JWT、MySQL Policy Store、Audit、OTLP 和告警配置均以注释形式提供，只在需要对应模式时取消注释。
+
+至少需要确认：
+
+- `LLM_API_KEY` 和模型端点。
+- `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`。
+- 本地开发保持 `AUTH_MODE=disabled`；启用认证时设置 `AUTH_MODE` 和 `MCP_AUTH_TOKEN`。
 
 ### 3. 建库造数
 
 ```bash
-python scripts/db_init.py --reset   # 创建 sales_demo 库、建表、随机造数
-python scripts/db_init.py --permission-fixtures  # 补充固定多主体权限测试数据
+python scripts/db_init.py --reset
+python scripts/db_init.py --permission-fixtures
 ```
 
-### 4. 启动 MCP Server（HTTP 常驻）
+### 4. 启动 MCP Server
 
 ```bash
 python -m mcp_server.server
-# 监听 http://127.0.0.1:8000/mcp（可用 MCP_HOST / MCP_PORT / MCP_PATH 覆盖）
+# 默认监听 http://127.0.0.1:8000/mcp
 ```
 
-启用静态 Bearer Token 时，在 `.env` 中配置：
+启动后可验证：
+
+```bash
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/readyz
+```
+
+启用静态 Bearer Token：
 
 ```bash
 AUTH_MODE=static
@@ -188,7 +232,7 @@ MCP_AUTH_TOKEN=alice-token
 
 服务端验证 token 并映射到 `configs/permissions.yaml` 中的 principal；Agent 会在 MCP HTTP 请求中发送 `Authorization: Bearer ...`。
 
-启用外部 OAuth 2.1 / JWT 时：
+启用外部 OAuth 2.1 / JWT：
 
 ```bash
 AUTH_MODE=jwt
@@ -211,24 +255,41 @@ POLICY_DB_PASSWORD=<policy-db-password>
 POLICY_DB_DATABASE=mcp_policy
 python scripts/policy_db_init.py
 python -m mcp_server.policy_admin validate configs/permissions.yaml
-python -m mcp_server.policy_admin publish configs/permissions.yaml --actor admin --reason v0.3
+python -m mcp_server.policy_admin publish configs/permissions.yaml --actor admin --reason v0.7
 ```
 
-### 5. 跑 Agent
+### 5. 运行 Agent
 
 ```bash
-# 方式一：直接问答（另开一个终端）
 python -m agent.agent "今年销售额最高的10家公司"
-
-# 方式二：打印工具调用过程（看 Agent 一步步调了哪些工具、SQL、结果）
 python -m agent.agent "各行业今年的销售总额排名" --trace
 ```
 
-> 包内使用相对导入，请在**项目根目录**用 `python -m ...` 方式运行。
+> 包内使用相对导入，请在项目根目录使用 `python -m ...` 执行。
+
+## 配置速查
+
+完整键位和默认值见 [`.env.example`](.env.example) 以及 `agent/config.py`、`mcp_server/config.py`。
+
+| 分类 | 关键配置 | 说明 |
+| --- | --- | --- |
+| Agent | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | OpenAI 兼容模型端点 |
+| Agent | `REQUEST_DEADLINE_SECONDS` | 单个问题总截止时间 |
+| Agent | `LLM_MAX_TOOL_ITERATIONS` / `MAX_TOOL_CALLS` / `MAX_SQL_REPAIRS` | 防止无限循环和修复 |
+| Agent | `MAX_TOKENS` / `MAX_COST` | Token 和费用预算，0 表示不限制 |
+| Agent | `BLOCKED_TOOLS` / `RETRY_SAFE_TOOLS` | 禁用工具与可安全重试的只读工具 |
+| MCP | `MCP_TRANSPORT` / `MCP_HOST` / `MCP_PORT` / `MCP_PATH` | HTTP 或 stdio 传输 |
+| DB | `MYSQL_*` | 业务数据库连接 |
+| Auth | `AUTH_MODE` / `AUTH_TOKENS_JSON` / `AUTH_JWT_*` | disabled、static 或 JWT |
+| Policy | `POLICY_STORE` / `POLICY_DB_*` | file 或 MySQL 策略存储 |
+| Schema | `SCHEMA_DESC_PATH` / `DOMAIN_QUERIES_PATH` | 语义和领域定义文件 |
+| Audit | `AUDIT_STORE` / `AUDIT_REQUIRED` / `AUDIT_FAILURE` | 日志或 MySQL 审计 |
+| Observability | `OTEL_OTLP_HTTP_ENDPOINT` / `OTEL_SAMPLE_RATIO` | OTLP 导出与采样 |
+| Alerts | `ALERT_RULES_PATH` / `ALERT_EVAL_SECONDS` | 进程内告警配置 |
 
 ## 目录结构
 
-```
+```text
 agent/                  Agent 侧
   config.py             LLM 参数 + MCP 端点
   client.py             MCP 会话管理与 MCP→OpenAI 适配（V0.7：注入 traceparent）
@@ -244,110 +305,80 @@ mcp_server/             Server 侧
   tools/
     schema.py           list_tables / get_schema / search_schema
     query.py            run_query（仅 MCP 协议转换，委托 QueryService）
-    domain.py           sales_summary / company_ranking / industry_analysis（领域工具，委托 DomainQueryService）
+    domain.py           sales_summary / company_ranking / industry_analysis
     policy_admin.py     策略状态、热加载、版本列表、导出与发布工具
   domain/               V0.5 领域查询层
-    models.py           QueryTemplate / QuerySpec / ParameterSpec（模板、参数、结果契约）
-    binder.py           参数绑定：白名单内联 + 类型校验 + ? 占位符
+    models.py           QueryTemplate / QuerySpec / ParameterSpec
+    binder.py           白名单内联 + 类型校验 + ? 占位符
     registry.py         configs/domain_queries.yaml 加载与 mtime 重载
-    service.py          编排：渲染 → QueryService → 统一 DTO（data/columns/meta/版本/truncated）
+    service.py          渲染 → QueryService → 统一 DTO
   services/
-    query_service.py    编排层：安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛（V0.7：延迟成功/失败 + 错误率 + Span）
-  auth/                  认证：Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
-  catalog/               SchemaCatalog：表/列/键/索引缓存
-                        + semantic.py：业务描述加载与轻量语义检索
-  observability/         Trace ID / Audit sink / Metrics / Health / Lifecycle / Alerts（V0.7 加固）
-    tracing.py           Server 侧 Span 封装（绑定 TraceContext，跨线程延续父子链）
-    metrics.py           有界直方图 + 标签卫生（禁止原始 SQL/高基数）
-    alerts.py            进程内告警引擎 + Dashboard 信号聚合
-    health.py            /healthz /readyz /metrics /traces /dashboard /alerts 响应构造
-  authorization/         授权：RBAC / ACL / 列可见性 / RLS / SQL 策略改写 / 审计
-                        + Schema/Semantic/Security Validator / Policy DB / 事务发布
-                        + 策略版本存储与热加载 / CTE 列血缘 / JSON 审计（V0.7：异步+失败策略+保留+归档）
-  security/             只读安全防线
-    models.py           数据模型（策略/解析结果/校验结果/查询结果）
-    parser.py           基于 sqlglot 的 AST 解析（表/列/函数/JOIN/子查询深度）
-    policy.py           策略加载（YAML）与规则匹配
-    validator.py        校验流水线 → ValidationResult（语句/表/列 ACL/JOIN 上限）
-  database/
-    connection.py       pymysql 连接与游标上下文
-    executor.py         只读查询执行（超时 + 行数 + 字节上限 + 驱动参数绑定 + Database Span）
-  policy_admin.py       策略管理 CLI：validate/status/publish/list/export
+    query_service.py    安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
+  auth/                 Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
+  catalog/              SchemaCatalog + 业务语义加载与检索
+  observability/        Trace / Metrics / Health / Lifecycle / Alerts
+  authorization/        RBAC / ACL / RLS / SQL 重写 / Policy DB / Audit
+  security/             AST 解析 / 策略匹配 / 只读校验
+  database/             连接池 + 只读执行 + 参数绑定
+  policy_admin.py       策略管理 CLI
 
-configs/security.yaml   安全策略（只读白名单/系统库/表列 Allowlist/JOIN/成本限制）
-configs/permissions.yaml 权限策略（角色、主体、表/列 ACL、行级策略）
-configs/schema_desc.yaml 业务语义元数据（表/列业务名、用途、口径、同义词、枚举）
-configs/domain_queries.yaml V0.5 领域查询定义（SQL 模板/参数/结果契约/领域口径）
-configs/alerts.yaml      V0.7 进程内告警规则（阈值/窗口/严重度）
-configs/prometheus/alerts.yml  V0.7 外部 Prometheus 告警规则（与 /metrics 对齐）
-configs/grafana/dashboard.json V0.7 Grafana 面板（错误率/P95/P99/超时率/工具失败率/池饱和度）
+configs/security.yaml             安全策略
+configs/permissions.yaml          权限策略
+configs/schema_desc.yaml          业务语义
+configs/domain_queries.yaml       领域查询定义
+configs/alerts.yaml               进程内告警规则
+configs/prometheus/alerts.yml     Prometheus 告警规则
+configs/grafana/dashboard.json    Grafana 面板
 
-tests/                  单元测试（pytest）
-  test_sql_parser.py    解析：拆分、分类、抽表名、标识符
-  test_sql_policy.py    策略：加载与关键字/正则/系统库匹配
-  test_sql_validator.py 校验流水线：放行与各类拒绝
-  test_query.py         run_query：校验拦截、LIMIT 补全、错误收敛
-  test_authorization.py RBAC/ACL/列展开/RLS/schema 裁剪/静态认证
-  test_policy_manager.py 策略序列化、版本存储与热加载
-  test_policy_validation.py Schema/Semantic/Security 校验
-  test_policy_db.py      策略库连接隔离与事务边界
-  test_policy_admin.py   策略管理工具权限与发布流程
-  test_permission_integration.py 真实 MySQL 多主体与 CTE 集成测试
-  test_schema_semantic.py  Schema Intelligence：语义加载/检索/查询模型/ACL 裁剪
-  test_domain_query.py    V0.5 领域查询：参数白名单/驱动绑定/RLS 一致性/DTO/截断超时/DB 集成
-  test_observability_v07.py V0.7 有界直方图/标签卫生/traceparent+Span/告警/审计
-
-scripts/                辅助脚本
-  db_init.py            建库、建表、造数
-  policy_db_init.py     初始化独立策略库
-  migrate_policy_db.py  从业务库迁移历史策略版本
-  batch_test.py         8 类问题批量回归 + 恶意 SQL 拦截测试
-
-examples.md             已验证问题、SQL 与结果、8 类测试报告
-.env.example            配置模板（键名 + 占位，无真实密钥）
+tests/                  pytest 测试
+scripts/                建库、策略库、迁移和批处理脚本
+examples.md             已验证问题和测试报告
+.env.example            最小可复制配置模板
 ```
 
 ## 测试
 
 ```bash
-python -m pytest -q                      # 全部单元测试（不依赖数据库）
+python -m pytest -q
 python -m pytest tests/test_sql_validator.py -q
 python -m pytest tests/test_authorization.py -q
+```
 
-# 可选：连真实数据库的集成用例（默认跳过）
-$env:RUN_DB_TESTS=1; python -m pytest tests/test_query.py -q   # PowerShell
-$env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q   # 多主体验收
-$env:RUN_DB_TESTS=1; python -m pytest tests/test_domain_query.py -q            # 领域工具验收
+默认会跳过需要真实 MySQL 的集成用例。设置 `RUN_DB_TESTS=1` 后运行完整测试：
+
+```powershell
+$env:RUN_DB_TESTS=1; python -m pytest -q
+$env:RUN_DB_TESTS=1; python -m pytest tests/test_query.py -q
+$env:RUN_DB_TESTS=1; python -m pytest tests/test_permission_integration.py -q
+$env:RUN_DB_TESTS=1; python -m pytest tests/test_domain_query.py -q
 ```
 
 ## 生产化要点
 
-- **只读三层纵深**：Agent 约定只读 → MCP Server 基于 AST 的 Allowlist 校验（语句 / 表 / 列 ACL / JOIN 上限 / 系统库封禁 / 行数 + 字节 + 长度 + 并发）→ 数据库账号建议只授 SELECT 权限
-- **请求级权限**：Bearer Token → Principal → RBAC/ACL/RLS；角色与主体属性只从服务端策略解析，不接受模型或工具参数自报身份
-- **控制面隔离**：`query_admin`、`policy_admin` 分离；全局 `*`、控制面权限与查询权限混用会被 Validator 拒绝
-- **JWT 默认策略模式**：`AUTH_PRINCIPAL_MODE=policy`；claims 模式必须通过服务端角色映射，原始 JWT 角色不能升级为 admin
-- **独立 Policy DB**：策略库使用 `POLICY_DB_*`，业务库账号不再需要策略表写权限
-- **原子发布**：active 行锁、版本写入、指针切换和审计在同一事务提交；支持 `expected_version` 防止覆盖
-- **授权后再校验**：RLS 与 `SELECT *` 展开后再次经过 AST 安全校验，避免策略改写引入新的越权面
-- **策略外置**：安全规则集中在 `configs/security.yaml`，收紧/放宽无需改代码；`mcp_server/security/` 负责解析与判定
-- **校验先于连库**：`run_query` 先校验再建连，恶意 SQL 在无数据库时也会被直接拒绝
-- **凭证隔离**：连接串、Key 全部走 `.env`，代码零硬编码；`.env` 已被 `.gitignore` 拦截
-- **版本注意**：本项目用 mcp **2.x** 的 `MCPServer`（v1 的 `FastMCP` 已改名，勿用旧教程 API）
-- **策略生命周期**：MySQL 版本表保存 document，active 指针原子切换；查询前按 TTL 检查并支持手动强制重载
-- **连接池与 SchemaCatalog**：Business/Policy 独立连接池，SchemaCatalog 提供 TTL 缓存和表/列/主键/外键/索引接口
-- **Schema Intelligence（V0.4）**：业务语义外置在 `configs/schema_desc.yaml`（无数据库只读账号写权限依赖、纯内存加载）；`search_schema` 先过 `schema:read` 权限，再按表/列 ACL 裁剪结果——敏感列的**描述本身**也不会泄露
-- **Domain Query Layer（V0.5）**：领域工具不直接访问数据库；模板与口径外置 `configs/domain_queries.yaml`（mtime 重载 + `definition_version` 哈希）；值参数类型/范围校验后经驱动绑定，排序/分组/粒度标识符只走白名单；RLS 改写发生在统一 QueryService 内，任意主体行为与 `run_query` 一致
-- **审计**：默认 JSON 日志，可通过 `AUDIT_STORE=mysql` 写入策略库；V0.7 支持后台异步批量落库、失败策略（ignore/warn/fail）、保留周期与归档表；`AUDIT_REQUIRED=true` 时同步保证必然入库；包含 policy_version、trace_id、request_id、SQL fingerprint、耗时和结果统计
-- **运行态接口**：`/healthz`、`/readyz`、`/metrics`（Prometheus），支持容器探针和 Prometheus 采集；V0.7 新增 `/traces`（最近 span）、`/dashboard`（运行态概览）、`/alerts`（告警状态）
-- **可观测性（V0.7）**：共享 `telemetry` 内核提供 OpenTelemetry 数据模型 + W3C `traceparent` 跨服务传播，Agent → MCP → Authorization → Database 四层 Span 落在同一条 trace；SQL 延迟成功/失败都记录，错误率按错误码 × 工具 × 主体类型聚合；Metrics 用有界直方图（固定分桶）避免内存无限增长，标签卫生禁止原始 SQL/完整用户输入/高基数字段；进程内告警引擎评估错误率 / P95/P99 延迟 / 超时率 / 工具失败率 / 连接池饱和度；配套 Grafana 面板 `configs/grafana/dashboard.json` 与 Prometheus 告警规则 `configs/prometheus/alerts.yml`
-- **优雅退出**：停止接收新请求、等待在途请求排空、排空审计队列、关闭连接池后退出
+- **只读三层纵深**：Agent 约定只读 → MCP Server AST Allowlist 校验 → 数据库账号只授 SELECT。
+- **请求级权限**：Bearer Token → Principal → RBAC/ACL/RLS；不接受模型或工具参数自报身份。
+- **控制面隔离**：`query_admin`、`policy_admin` 分离；控制面权限不能混入查询角色。
+- **独立 Policy DB**：策略库使用 `POLICY_DB_*`，业务库账号无需策略表写权限。
+- **原子发布**：active 行锁、版本写入、指针切换和审计在同一事务提交。
+- **授权后再校验**：RLS 与 `SELECT *` 展开后再次经过 AST 安全校验。
+- **凭证隔离**：连接串和 Key 使用 `.env` 或 Secret Manager，不进入镜像和仓库。
+- **策略外置**：安全规则集中在 `configs/security.yaml`。
+- **校验先于连库**：恶意 SQL 在无数据库连接时也会被拒绝。
+- **连接池与 SchemaCatalog**：业务库与策略库独立连接池，SchemaCatalog 提供 TTL 缓存。
+- **审计**：`AUDIT_STORE=mysql` 支持异步批量落库、失败策略、保留周期和归档；`AUDIT_REQUIRED=true` 会同步写入并向上传播失败。
+- **可观测性**：`telemetry` 提供 W3C `traceparent` 和 OTLP/HTTP JSON 导出；生产环境建议接入 OpenTelemetry Collector、Prometheus、Grafana 和 Alertmanager。
+- **优雅退出**：停止接收新请求、等待在途请求排空、排空审计队列、关闭连接池后退出。
 
 ## 已知边界
 
-- 关键字黑名单是**粗粒度**防线，只应对常规风险；生产环境仍应以数据库最小权限（只读账号、禁止 UDF/`LOAD_FILE` 等）为根本
-- 解析基于 `sqlglot` 的 AST，表/列/函数/JOIN 取自真实语法结构而非字符串匹配；`@@version` 这类符号 token AST 不可见，故保留 `forbidden_patterns` 作辅助防线兜底
-- V0.3 已支持普通 CTE、嵌套 CTE 与派生表的列血缘；无法完整解析血缘时仍 fail closed
-- 静态 Bearer Token 用于本地测试；生产认证应使用 `AUTH_MODE=jwt` 接入外部 OAuth 2.1 / JWKS
+- 关键字黑名单是粗粒度防线，生产环境仍应以数据库最小权限（只读账号、禁止 UDF/`LOAD_FILE` 等）为根本。
+- 解析基于 `sqlglot` AST；`@@version` 这类符号 token AST 不可见，因此保留 `forbidden_patterns` 作为辅助防线。
+- 普通 CTE、嵌套 CTE 与派生表列血缘已支持；无法完整解析血缘时 fail closed。
+- 静态 Bearer Token 只适合本地测试；生产认证应使用 `AUTH_MODE=jwt` 接入外部 OAuth 2.1 / JWKS。
+- `/metrics`、`/traces`、`/dashboard`、`/alerts` 是运维接口，不应直接暴露到公网。部署时必须限制内网访问或由反向代理增加管理认证。
+- `/traces` 和 `/alerts` 展示的是当前进程内有界状态；多实例场景应通过 OpenTelemetry Collector、Prometheus 和 Alertmanager 聚合。
+- 默认不提供 TLS、HA、Secret Manager、备份和灾备能力，需要由部署平台补齐。
+- 本项目不是通用 BI 平台，也不替代数据库自身的权限、审计和备份机制。
 
 ## License
 

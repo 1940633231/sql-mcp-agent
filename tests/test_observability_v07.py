@@ -276,3 +276,43 @@ def test_audit_required_propagates_write_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="db unavailable"):
         audit_mod.log_event("required_audit", principal="alice")
+
+
+# ---------------- 11. 错误率统一分母 + 工具失败率计入业务错误 ----------------
+def test_error_rate_uses_unified_denominator(monkeypatch):
+    from mcp_server.observability import alerts as alerts_mod
+    from mcp_server.observability.metrics import Metrics
+
+    # 用全新 Metrics 隔离，避免被文件内其它测试的计数污染
+    monkeypatch.setattr(alerts_mod.metrics_mod, "metrics", Metrics())
+    m = alerts_mod.metrics_mod.metrics
+    engine = alerts_mod.AlertEngine(interval_seconds=60)
+
+    # 只有权限拒绝、根本没有进入数据库执行：错误率应为 1.0（而非 0.0 / 超 100%）
+    m.inc("query_requests_total", {}, 5)
+    m.inc("query_errors_total", {"code": "permission_denied", "tool": "x", "principal": "query"}, 5)
+    sig = engine.evaluate()["signals"]
+    assert sig["error_rate"] == 1.0
+
+    # 混入成功请求（加分母不加分子）+ 校验错误：错误率回落到 (0,1]
+    m.inc("query_requests_total", {}, 2)
+    m.inc("query_errors_total", {"code": "validation_error", "tool": "x", "principal": "query"}, 1)
+    sig = engine.evaluate()["signals"]
+    assert 0 <= sig["error_rate"] <= 1.0
+    assert sig["error_rate"] == 1 / 2
+
+
+def test_tool_failure_rate_includes_business_errors(monkeypatch):
+    from mcp_server.observability import alerts as alerts_mod
+    from mcp_server.observability.metrics import Metrics
+
+    monkeypatch.setattr(alerts_mod.metrics_mod, "metrics", Metrics())
+    m = alerts_mod.metrics_mod.metrics
+    engine = alerts_mod.AlertEngine(interval_seconds=60)
+
+    # 业务错误返回（不抛异常）：tool_business_errors_total 应计入分子
+    m.inc("query_requests_total", {}, 4)
+    m.inc("tool_business_errors_total", {"tool": "run_query"}, 1)
+    sig = engine.evaluate()["signals"]
+    # 无 MCP 协议异常时，分母回退到 requests（4），分子=业务错误 1
+    assert sig["tool_failure_rate"] == 1 / 4

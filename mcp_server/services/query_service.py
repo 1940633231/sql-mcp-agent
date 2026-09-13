@@ -69,6 +69,9 @@ class QueryService:
         """
         started = time.monotonic()
         span = tracing.request_child_span("query.execute")
+        # 统一分母：每次查询请求（含认证/校验/权限/并发/DB 全路径）都计入，
+        # 由成功 + 失败组成，保证 error_rate ∈ [0, 1]。
+        metrics.inc("query_requests_total")
         # 解析一次上下文供指标标签使用（鉴权失败时以 unknown 兜底）。
         metric_ctx = context
         if metric_ctx is None:
@@ -99,6 +102,8 @@ class QueryService:
                 "query_errors_total",
                 {"code": code, "tool": tool, "principal": principal},
             )
+            # 返回业务错误的工具调用：供 tool_failure_rate 计入（不抛异常型失败）。
+            metrics.inc("tool_business_errors_total", {"tool": tool})
             tracing.tracer.end(span, status="error", attributes=attr)
         else:
             tracing.tracer.end(span, status="ok", attributes=attr)

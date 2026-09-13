@@ -121,6 +121,14 @@ class AlertEngine:
         exec_delta = delta(
             "query_executions_total", None, prev.get("counters"), snap["counters"]
         )
+        # 统一分母：query_requests_total 覆盖认证/校验/权限/并发/DB 全路径错误。
+        requests_delta = delta(
+            "query_requests_total", None, prev.get("counters"), snap["counters"]
+        )
+        # 业务错误返回（不抛异常型）的工具失败，补进分子。
+        biz_tool_err = delta(
+            "tool_business_errors_total", None, prev.get("counters"), snap["counters"]
+        )
         tool_total = delta(
             "mcp_requests_total", None, prev.get("counters"), snap["counters"]
         )
@@ -130,6 +138,12 @@ class AlertEngine:
             prev.get("counters"), snap["counters"],
         )
 
+        # error_rate 分母用统一 requests 口径；缺 requests 时回退到 exec（兼容运行中实例）。
+        rate_denom = requests_delta if requests_delta > 0 else exec_delta
+        error_rate = err_delta / rate_denom if rate_denom > 0 else 0.0
+        tool_denom = tool_total if tool_total > 0 else requests_delta
+        tool_failure = (tool_err + biz_tool_err) / tool_denom if tool_denom > 0 else 0.0
+
         hist = snap.get("histograms", {})
         latency_summary = hist.get("query_latency_overall_seconds") or {}
         pool = pool_stats()
@@ -138,9 +152,9 @@ class AlertEngine:
         pool_saturation = (biz.get("in_use") or 0) / pool_size if pool_size else 0.0
 
         return {
-            "error_rate": err_delta / exec_delta if exec_delta > 0 else 0.0,
+            "error_rate": error_rate,
             "timeout_rate": (timeout_delta / err_delta) if err_delta > 0 else 0.0,
-            "tool_failure_rate": (tool_err / tool_total) if tool_total > 0 else 0.0,
+            "tool_failure_rate": tool_failure,
             "latency_p95_seconds": latency_summary.get("p95", 0.0),
             "latency_p99_seconds": latency_summary.get("p99", 0.0),
             "pool_saturation": round(pool_saturation, 4),

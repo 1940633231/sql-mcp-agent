@@ -51,6 +51,21 @@
 - 全局 Deadline 进一步收紧为硬上限：`run()` 外层用统一的 `asyncio.timeout(REQUEST_DEADLINE_SECONDS)` 包住 MCP 建连 + `initialize` + 上下文读取 + 全循环；`asyncio.TimeoutError` 现统一收敛为 `TIMEOUT`（带明确信息），不再落入通用 `TOOL_ERROR`/空 `error_message`。
 - `.env.example` 补全为覆盖 `agent/config.py` 与 `mcp_server/config.py` 全部 `os.getenv` 变量的全量模板（75 项）：新增 `AUTH_JWT_*`、`AUTH_PRINCIPAL_MODE`、`POLICY_DB_*`、`AUDIT_*`、`SCHEMA_*`、`DOMAIN_QUERIES_PATH` 及连接池/优雅退出配置；`AUTH_TOKENS_JSON` 样例改为合法 JSON（默认注释，验证可解析）；`LLM_API_KEY` 占位符改为含「填入」字样，确保 `SQLAgent` 未配置校验能被提前触发。
 
+## [v0.5.0] - 2026-09-12
+
+### Added
+- **Domain Query Layer**：新增 `sales_summary`、`company_ranking`、`industry_analysis` 三个领域工具，模板与业务口径外置到 `configs/domain_queries.yaml`。
+- **QueryTemplate / QuerySpec**：声明参数、SQL 槽位、结果列、时间粒度、排序字段和领域定义版本；配置按 mtime 与内容哈希热重载。
+- **参数化执行**：值参数经类型、范围和白名单校验后使用数据库驱动绑定；标识符参数只能映射到服务端允许的固定 SQL 片段。
+- **统一领域 DTO**：`data`、`columns`、`meta`、`definition_version`、`policy_version` 和 `truncated`；全部复用现有 AST Guard、RBAC、ACL、RLS、LIMIT、审计和指标链路。
+- **Agent 领域工具优先**：常见分析优先调用领域工具，复杂或未覆盖问题再回退 `run_query`。
+- **测试**：新增 `tests/test_domain_query.py`，覆盖参数白名单、驱动绑定、RLS 一致性、DTO、截断、超时、非法参数和真实 MySQL 集成。
+
+### Fixed
+- `industry_analysis` 在指定行业时仍使用窗口内全部行业作为占比分母。
+- 领域工具必填日期在 MCP Schema 中标记为 required。
+- 领域结果列与 `max_limit` 契约在运行时强制执行。
+
 ## [v0.4.1] - 2026-09-12（基线冻结）
 
 ### Changed

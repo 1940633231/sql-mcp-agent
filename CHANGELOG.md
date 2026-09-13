@@ -3,7 +3,13 @@
 本项目的版本演进记录。遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，
 版本号遵循语义化版本（SemVer）。
 
-## [Unreleased]
+## [v0.8.0] - 2026-09-13
+
+### Added
+- **CI 安全扫描**：新增 CodeQL（Python 静态分析）、Trivy（文件 + 依赖漏洞扫描，SARIF 上传统一收录 Security 页）、Dependabot（pip + GitHub Actions 每周例行更新），作为 PR/主分支门禁。
+- **Metrics 标准导出（薄适配层）**：新增 `prom_exporter.py`，把自研 Metrics 内核以 `prometheus_client.Collector` 桥接到官方 Registry，`/metrics` 改为 `generate_latest()` 标准文本；自研直方图补 `iter_histogram_buckets()`，开放 `le` 桶数据，供外部 Prometheus 做 `histogram_quantile`。内核与全部调用方接口不变，测试零破坏、可回退。
+- **告警外置配置**：新增 `configs/prometheus/alertmanager.yml`，提供告警去重 / 静默 / 分级路由（warning/critical 分 channel）+ 抑制规则 + oncall 时间窗，与既有 `configs/prometheus/alerts.yml` 配套；进程内 AlertEngine（/dashboard、/alerts）保留为独立低延迟通道。
+- **零基础设施审计落盘（V0.8 审计存储）**：`AUDIT_LOG_FILE` 配置后把结构化 JSON 审计事件以每行纯 JSON 单独写文件并按大小轮转（`AUDIT_LOG_MAX_BYTES` / `AUDIT_LOG_BACKUP_COUNT`），可被 Promtail / Fluent Bit 直接采集；留空维持默认 stdout，行为不变。
 
 ### Fixed
 - `.env.example` 改为最小可复制模板：只启用本地启动必需配置，Static/JWT、MySQL Policy Store、审计与 OTLP 等模式全部改为注释示例，避免空字符串被误当成有效配置。

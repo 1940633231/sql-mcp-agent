@@ -12,6 +12,8 @@
 """
 import json
 import logging
+import logging.handlers
+import os
 import queue
 import threading
 import time
@@ -24,6 +26,7 @@ from ..observability.metrics import metrics
 logger = logging.getLogger("sql_mcp.audit")
 _audit_schema_lock = threading.Lock()
 _audit_schema_ready = False
+_file_handler = None
 
 
 def _emit_ddl(cur) -> None:
@@ -269,6 +272,44 @@ def log_event(event: str, **fields) -> None:
 
 def audit_stats() -> dict:
     return _writer.stats()
+
+
+def _ensure_file_logging() -> None:
+    """可选：把结构化 JSON 审计事件单独落盘（V0.8 零基础设施层）。
+
+    仅在 ``AUDIT_LOG_FILE`` 配置后启用：用 ``%(message)s`` 让每行都是完整 JSON，
+    自带按大小轮转（AUDIT_LOG_MAX_BYTES / BACKUP），避免长期运行撑爆磁盘。
+    不设该配置时维持默认 stdout，行为不变；因此可被外部采集器随取走，无需新增组件。
+    """
+    global _file_handler
+    path = config.AUDIT_LOG_FILE
+    if not path or _file_handler is not None:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        pass
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        maxBytes=config.AUDIT_LOG_MAX_BYTES,
+        backupCount=config.AUDIT_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    # 只接收 sql_mcp.audit 本日志器的审计事件，且阻止向上冒泡到 stdout 根日志器。
+    handler.addFilter(lambda record: record.name == "sql_mcp.audit")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    _file_handler = handler
+    # 启动提示走根日志器（stdout），不写入审计事件文件，保持每行都是纯 JSON。
+    logging.getLogger(__name__ + ".control").info("audit file logging enabled: %s", path)
+
+
+def audit_start() -> None:
+    _ensure_file_logging()
+    _writer.start()
 
 
 def audit_flush() -> None:

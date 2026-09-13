@@ -5,6 +5,7 @@ from mcp_server.observability import health
 from mcp_server.observability.fingerprint import canonical_sql, sql_fingerprint
 from mcp_server.observability.lifecycle import Lifecycle
 from mcp_server.observability.metrics import Metrics
+from mcp_server.observability.prom_exporter import new_payload
 
 
 def test_sql_fingerprint_normalizes_literals():
@@ -68,3 +69,24 @@ def test_metrics_payload_contains_pool_gauges(monkeypatch):
     rendered = health.metrics_payload()
     assert "db_pool_in_use_business 1" in rendered
     assert "db_pool_created_policy 1" in rendered
+
+
+def test_prom_exporter_emits_standard_format(monkeypatch):
+    """薄适配层：自研 Metrics 内核 → prometheus_client 标准文本导出。"""
+    m = Metrics()
+    m.inc("req_total", {"status": "ok"})
+    m.observe("dur_seconds", 0.1, {"method": "tools/call"})
+    # 标签卫生由内核负责：敏感键被丢弃，不进入标准导出。
+    m.inc("req_total", {"status": "ok", "sql": "SELECT secret"})
+    monkeypatch.setattr("mcp_server.observability.metrics.metrics", m)
+    out = new_payload({"db_pool_in_use_business": 1})
+    assert '# TYPE req_total counter' in out
+    assert 'req_total{status="ok"} 2.0' in out
+    assert '# TYPE dur_seconds histogram' in out
+    assert 'dur_seconds_count{method="tools/call"} 1.0' in out
+    assert 'dur_seconds_bucket{le="Inf",method="tools/call"} 1.0' in out
+    assert '# TYPE db_pool_in_use_business gauge' in out
+    assert 'db_pool_in_use_business 1.0' in out
+    # 敏感标签 `sql` 被内核丢弃，不得出现在标准导出中。
+    assert 'sql=' not in out
+    assert 'SELECT secret' not in out

@@ -1,0 +1,62 @@
+# Alertmanager 配置（V0.8）：为 configs/prometheus/alerts.yml 的告警提供
+# 去重 / 静默 / 路由 / 升级。与进程内 AlertEngine（configs/alerts.yaml，供
+# /dashboard、/alerts 使用）是两条独立的告警通道：
+#   - 进程内 AlertEngine：低延迟、单实例、状态机（pending->firing->resolved），
+#     不强依赖外部组件，适合调试与单机自治；
+#   - Prometheus + Alertmanager：多实例/集群、久保留、可静默/路由/升级，
+#     生产部署推荐启用，通过标准文本格式抓取 /metrics 即可对齐告警语义。
+#
+# 用法：由外部 Prometheus 进程加载本文件（--config.file=configs/prometheus/alertmanager.yml），
+# 并让 Prometheus 的 alerting 段指向本 Alertmanager。
+
+global:
+  resolve_timeout: 5m
+
+# 时间范围限制：仅在工作时间触发页面告警，非工作时间降级为普通通知。
+time_intervals:
+  - name: oncall_hours
+    time_intervals:
+      - weekdays: ["monday:friday"]
+        times:
+          - start_time: "09:00"
+            end_time: "21:00"
+
+route:
+  # 默认分流：按 label `severity` 分级；无法匹配的走默认 receiver。
+  group_by: ["alertname", "instance"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: "default"
+
+  routes:
+    - matchers:
+        - severity =~ "critical"
+      receiver: "critical"
+      # 升级：critical 在 oncall 时段直接告警，其余时段也进 critical 接收组。
+      active_time_intervals:
+        - oncall_hours
+    - matchers:
+        - severity =~ "warning"
+      receiver: "warn"
+
+receivers:
+  # 占位接收器：实际接入时替换为 chatops / 邮件 / PagerDuty 接收器。
+  - name: default
+  - name: warn
+  - name: critical
+    # 示例：webhook 接收器（去重和路由由本文件统一管，Webhook 只负责投递）。
+    # webhook_configs:
+    #   - url: "http://your-chatbot/webhook/alert"
+    #       send_resolved: true
+    #   - url: "http://127.0.0.1:8000/alerts/webhook"   # 可选：回投到进程内 /alerts
+    #       send_resolved: true
+
+# 静默策略（默认无全局静默，静默由 Alertmanager UI/API 维护）。
+inhibit_rules:
+  # 当 critical 告警已 firing 时，抑制同 instance 的 warning 告警，减少告警风暴。
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ["alertname", "instance"]

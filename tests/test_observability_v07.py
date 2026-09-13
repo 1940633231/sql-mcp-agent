@@ -278,6 +278,43 @@ def test_audit_required_propagates_write_error(monkeypatch):
         audit_mod.log_event("required_audit", principal="alice")
 
 
+def test_audit_file_logging_zero_infra(tmp_path, monkeypatch):
+    """零基础设施层：配置 AUDIT_LOG_FILE 后，审计事件以纯 JSON 独立落盘。"""
+    import logging
+    from mcp_server.authorization import audit as audit_mod
+
+    logfile = tmp_path / "audit" / "events.log"
+    monkeypatch.setattr(audit_mod.config, "AUDIT_LOG_FILE", str(logfile))
+    monkeypatch.setattr(audit_mod.config, "AUDIT_LOG_MAX_BYTES", 1048576)
+    monkeypatch.setattr(audit_mod.config, "AUDIT_LOG_BACKUP_COUNT", 2)
+    monkeypatch.setattr(audit_mod.config, "AUDIT_STORE", "log")
+
+    audit_mod._file_handler = None
+    audit_mod._ensure_file_logging()
+    try:
+        audit_mod.log_event("authorization_decision", principal="alice", decision="deny")
+        for h in audit_mod.logger.handlers:
+            h.flush()
+        content = logfile.read_text(encoding="utf-8")
+        # 事件行是完整 JSON；不依赖底材料，验证 JSON 反序列化。
+        import json
+        rows = [line for line in content.splitlines() if line.strip().startswith("{")]
+        assert rows, "expected at least one JSON audit row"
+        event = json.loads(rows[0])
+        assert event["event"] == "authorization_decision"
+        assert event["principal"] == "alice"
+        # 每行必须是纯 JSON（无日志级别/时间前缀）
+        assert all(line.startswith("{") for line in content.splitlines() if line.strip())
+    finally:
+        # 清理单例，避免污染其它测试的审计日志行为
+        for h in list(audit_mod.logger.handlers):
+            if isinstance(h, logging.handlers.RotatingFileHandler):
+                h.close()
+                audit_mod.logger.removeHandler(h)
+        audit_mod.logger.propagate = True
+        audit_mod._file_handler = None
+
+
 # ---------------- 11. 错误率统一分母 + 工具失败率计入业务错误 ----------------
 def test_error_rate_uses_unified_denominator(monkeypatch):
     from mcp_server.observability import alerts as alerts_mod

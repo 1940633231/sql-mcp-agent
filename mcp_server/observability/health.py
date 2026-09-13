@@ -9,7 +9,7 @@ from ..authorization import audit as audit_mod
 from ..database.connection import business_pool, policy_pool, pool_stats
 from .alerts import alert_engine
 from .lifecycle import lifecycle
-from .metrics import metrics
+from .prom_exporter import new_payload
 from telemetry import tracer
 
 
@@ -61,7 +61,8 @@ def metrics_payload() -> str:
             stats["in_use"] / stats["size"] if stats.get("size") else 0.0
         )
     gauges["process_inflight_requests"] = lifecycle.inflight
-    return metrics.render_prometheus(gauges)
+    # V0.8：自研 Metrics 内核 → prometheus_client 官方导出（薄适配层）。
+    return new_payload(gauges)
 
 
 def traces_payload() -> dict:

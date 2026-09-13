@@ -109,6 +109,11 @@ DOMAIN_QUERIES_PATH = os.getenv("DOMAIN_QUERIES_PATH", "")
 # V0.7 Observability：审计异步写入 / 失败策略 / 保留与归档
 AUDIT_STORE = os.getenv("AUDIT_STORE", "log").strip().lower()
 AUDIT_REQUIRED = os.getenv("AUDIT_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
+# 审计日志独立落盘路径（可选）：空=维持默认 stdout；设置后把结构化 JSON 审计事件
+# 单独写入该文件并轮转，便于被外部采集器（Promtail / Fluent Bit）随取走，无需额外组件。
+AUDIT_LOG_FILE = os.getenv("AUDIT_LOG_FILE", "").strip()
+AUDIT_LOG_MAX_BYTES = int(os.getenv("AUDIT_LOG_MAX_BYTES", "104857600"))  # 100MB
+AUDIT_LOG_BACKUP_COUNT = int(os.getenv("AUDIT_LOG_BACKUP_COUNT", "5"))
 # 审计落库失败策略：ignore=静默丢弃 / warn=记日志 / fail=标记不健康并暴露到 /healthz。
 AUDIT_FAILURE = os.getenv("AUDIT_FAILURE", "warn").strip().lower()
 # true=后台异步写入（默认可靠）；false=进程内同步写（低吞吐场景）。

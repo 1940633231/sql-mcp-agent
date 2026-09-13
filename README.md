@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/1940633231/sql-mcp-agent)](https://github.com/1940633231/sql-mcp-agent/releases)
 [![CI](https://github.com/1940633231/sql-mcp-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/1940633231/sql-mcp-agent/actions/workflows/ci.yml)
 
-> **当前版本：v0.7.1（Observability Hardening fix）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固 + v0.7.1 发布级修复。MCP Tool 契约仍以 v0.5.0 兼容基线为准。
+> **当前版本：v0.8.0（标准可观测性导出 + CI 安全扫描 + 审计落盘）**；V0.4 Schema Intelligence + 契约锁定 + CI → V0.5 Domain Query Layer → V0.6 Agent Reliability → V0.7 可观测性加固 → v0.8.0 工程化收尾（Metrics 标准导出、Alertmanager 外置、零基础设施审计落盘、CodeQL/Trivy/Dependabot 安全门禁）。MCP Tool 契约仍以 v0.5.0 兼容基线为准。
 
 一个通过 **MCP（Model Context Protocol）** 把数据库能力封装成工具、并用 **Agent** 自然语言查询 MySQL 的学习型 Reference Implementation。数据访问是标准 MCP Server，安全防线独立成模块，策略外置为 YAML，Agent 动态发现工具并调用受治理的领域能力。
 
@@ -316,7 +316,7 @@ mcp_server/             Server 侧
     query_service.py    安全校验 → RBAC/ACL/RLS → LIMIT → 执行 → 错误收敛
   auth/                 Principal / RequestContext / 静态 Token / OAuth 2.1 JWT
   catalog/              SchemaCatalog + 业务语义加载与检索
-  observability/        Trace / Metrics / Health / Lifecycle / Alerts
+  observability/        Trace / Metrics / Health / Lifecycle / Alerts；prom_exporter 桥接标准 Prometheus 导出（v0.8）
   authorization/        RBAC / ACL / RLS / SQL 重写 / Policy DB / Audit
   security/             AST 解析 / 策略匹配 / 只读校验
   database/             连接池 + 只读执行 + 参数绑定
@@ -328,7 +328,9 @@ configs/schema_desc.yaml          业务语义
 configs/domain_queries.yaml       领域查询定义
 configs/alerts.yaml               进程内告警规则
 configs/prometheus/alerts.yml     Prometheus 告警规则
+configs/prometheus/alertmanager.yml  Alertmanager 去重/静默/路由配置（v0.8）
 configs/grafana/dashboard.json    Grafana 面板
+.github/workflows/                CI 安全门禁：CodeQL / Trivy / Dependabot（v0.8）
 
 tests/                  pytest 测试
 scripts/                建库、策略库、迁移和批处理脚本
@@ -365,8 +367,9 @@ $env:RUN_DB_TESTS=1; python -m pytest tests/test_domain_query.py -q
 - **策略外置**：安全规则集中在 `configs/security.yaml`。
 - **校验先于连库**：恶意 SQL 在无数据库连接时也会被拒绝。
 - **连接池与 SchemaCatalog**：业务库与策略库独立连接池，SchemaCatalog 提供 TTL 缓存。
-- **审计**：`AUDIT_STORE=mysql` 支持异步批量落库、失败策略、保留周期和归档；`AUDIT_REQUIRED=true` 会同步写入并向上传播失败。
-- **可观测性**：`telemetry` 提供 W3C `traceparent` 和 OTLP/HTTP JSON 导出；生产环境建议接入 OpenTelemetry Collector、Prometheus、Grafana 和 Alertmanager。
+- **审计**：`AUDIT_STORE=mysql` 支持异步批量落库、失败策略、保留周期和归档；`AUDIT_REQUIRED=true` 会同步写入并向上传播失败；v0.8 起设置 `AUDIT_LOG_FILE` 可将结构化 JSON 审计事件以纯 JSON 独立落盘并按大小轮转（零基础设施，可直接被 Promtail / Fluent Bit 采集）。
+- **可观测性**：`telemetry` 提供 W3C `traceparent` 和 OTLP/HTTP JSON 导出；`/metrics` 自 v0.8 起输出官方 `prometheus_client` 标准文本（薄适配层），可直接被 Prometheus 抓取；告警外置配合 `configs/prometheus/alertmanager.yml`。生产环境建议接入 OpenTelemetry Collector、Prometheus、Grafana 和 Alertmanager。
+- **CI 安全门禁**：仓库内置 CodeQL、Trivy、Dependabot 工作流，PR/主分支自动执行依赖与代码漏洞扫描。
 - **优雅退出**：停止接收新请求、等待在途请求排空、排空审计队列、关闭连接池后退出。
 
 ## 已知边界

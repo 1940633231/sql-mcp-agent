@@ -149,6 +149,24 @@ class Metrics:
             }
         return {"counters": counters, "histograms": histograms}
 
+    def iter_histogram_buckets(self):
+        """以标准 Prometheus Histogram 序列形式暴露自研直方图（薄适配专用）。
+
+        Yield ``(name, labels, cumulative_buckets, sum, count)``，其中
+        ``cumulative_buckets`` 为 ``[(上界, 累计计数), ...]``（含 +Inf）。
+        供 prometheus_client / 标准导出桥读取，不改动既有 snapshot 语义。
+        """
+        with self._lock:
+            for (name, labels), hist in self._histograms.items():
+                cumulative = 0
+                buckets = []
+                for i, bound in enumerate(self._buckets):
+                    cumulative += hist._buckets[i]
+                    buckets.append((float(bound), cumulative))
+                cumulative += hist._buckets[-1]
+                buckets.append((float("inf"), cumulative))
+                yield name, dict(labels), buckets, hist._sum, hist._count
+
     def render_prometheus(self, extra_gauges: dict[str, float] | None = None) -> str:
         lines: list[str] = []
         with self._lock:

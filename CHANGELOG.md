@@ -5,7 +5,9 @@
 
 ## [Unreleased]
 
-（暂无）
+### Fixed
+- `.env.example` 改为最小可复制模板：只启用本地启动必需配置，Static/JWT、MySQL Policy Store、审计与 OTLP 等模式全部改为注释示例，避免空字符串被误当成有效配置。
+- 新增 `.env.example` 可复制性回归测试，实际加载模板并导入 `mcp_server.server`，防止空值、行尾注释和错误 Token 映射再次导致启动失败。
 
 ## [v0.6.0] - 2026-09-12
 

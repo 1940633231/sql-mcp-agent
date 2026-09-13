@@ -91,11 +91,6 @@
 - 新增 MCP Tool `search_schema(keyword)`（轻量别名检索，按 `schema:read` + 表/列 ACL 裁剪）。
 - `get_schema` 与资源输出附带业务描述。
 
-## [v0.3.1] - 2026-09-10
-
-### Added
-- Policy Control Plane Hardening：控制面/查询面隔离、Schema/Semantic/Security 校验、策略发布原子化加固。
-
 ## [v0.3.0] - 2026-09-09
 
 ### Added

@@ -33,19 +33,77 @@ def reload_permission_policy() -> dict:
     }
 
 
+def _short_value(value, maxlen: int = 120) -> str:
+    """把 diff 的值截短成一行，避免 MCP 响应被超长值刷屏。"""
+    text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    text = str(text).replace("\n", " ")
+    return text if len(text) <= maxlen else text[:maxlen] + "..."
+
+
+def _diff_documents(base: dict, target: dict) -> list[dict]:
+    """结构化对比两个策略文档（规范化 dict），返回 add/remove/modify 变更列表。
+
+    变更项含 ``op``（add/remove/modify）、``path``（点路径/下标路径）与人性化
+    ``detail``。仅按顶层结构递归，字段自身的语义不做二次推断。
+    """
+    changes: list[dict] = []
+
+    def _collect_added(value, path, changes):
+        changes.append({"op": "add", "path": path, "detail": "+ %s = %s" % (path, _short_value(value))})
+
+    def _collect_removed(value, path, changes):
+        changes.append({"op": "remove", "path": path, "detail": "- %s = %s" % (path, _short_value(value))})
+
+    def _diff_value(a, b, path, changes):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for key in sorted(set(a) | set(b)):
+                child = "%s.%s" % (path, key) if path else key
+                if key not in a:
+                    _collect_added(b[key], child, changes)
+                elif key not in b:
+                    _collect_removed(a[key], child, changes)
+                else:
+                    _diff_value(a[key], b[key], child, changes)
+        elif isinstance(a, list) and isinstance(b, list):
+            for idx in range(max(len(a), len(b))):
+                child = "%s[%d]" % (path, idx)
+                if idx >= len(b):
+                    _collect_removed(a[idx], child, changes)
+                elif idx >= len(a):
+                    _collect_added(b[idx], child, changes)
+                else:
+                    _diff_value(a[idx], b[idx], child, changes)
+        elif a != b:
+            changes.append(
+                {"op": "modify", "path": path, "detail": "%s: %s → %s" % (path, _short_value(a), _short_value(b))}
+            )
+
+    _diff_value(base, target, "", changes)
+    return changes
+
+
 def list_permission_policy_versions(limit: int = 20) -> list[dict]:
-    """列出 MySQL 或当前文件中的最近策略版本。"""
+    """列出 MySQL 或当前文件中的最近策略版本，并附上每版相对前一版本的结构化 diff。
+
+    diff 描述「该版本相对上一版本」改动（新增/删除/修改），其中最新（active）版本
+    对比被它替换的上一版本；无相邻版本的旧版本 diff 为空列表。
+    """
     _require_permission("policy:read")
-    return [
-        {
-            "version": record.version,
-            "source": record.source,
-            "actor": record.actor,
-            "reason": record.reason,
-            "updated_at": record.updated_at,
-        }
-        for record in _manager.list_versions(limit=limit)
-    ]
+    records = _manager.list_versions(limit=limit)
+    result: list[dict] = []
+    for i, record in enumerate(records):
+        base = records[i + 1].document if i + 1 < len(records) else None
+        result.append(
+            {
+                "version": record.version,
+                "source": record.source,
+                "actor": record.actor,
+                "reason": record.reason,
+                "updated_at": record.updated_at,
+                "diff": _diff_documents(base, record.document) if base is not None else [],
+            }
+        )
+    return result
 
 
 def export_permission_policy() -> dict:
